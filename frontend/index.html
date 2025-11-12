@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Croonify - Lyric Video Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status.processing {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+        }
+        .status.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+        }
+        .hidden {
+            display: none;
+        }
+        video {
+            width: 100%;
+            margin-top: 20px;
+        }
+        progress {
+            width: 100%;
+            height: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Croonify - Lyric Video Generator</h1>
+    
+    <div class="container">
+        <div class="form-group">
+            <label for="audioFile">Upload Audio File (MP3/WAV):</label>
+            <input type="file" id="audioFile" accept=".mp3,.wav">
+        </div>
+        
+        <div class="form-group">
+            <label for="lyricsFile">Upload Lyrics File (TXT):</label>
+            <input type="file" id="lyricsFile" accept=".txt">
+        </div>
+        
+        <button id="generateBtn">Generate Lyric Video</button>
+        
+        <div id="statusContainer" class="status hidden">
+            <p id="statusMessage">Processing...</p>
+            <progress id="statusProgress" value="0" max="100"></progress>
+        </div>
+        
+        <div id="videoContainer" class="hidden">
+            <h3>Your Lyric Video:</h3>
+            <video id="videoPreview" controls></video>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const audioFileInput = document.getElementById('audioFile');
+            const lyricsFileInput = document.getElementById('lyricsFile');
+            const generateBtn = document.getElementById('generateBtn');
+            const statusContainer = document.getElementById('statusContainer');
+            const statusMessage = document.getElementById('statusMessage');
+            const statusProgress = document.getElementById('statusProgress');
+            const videoContainer = document.getElementById('videoContainer');
+            const videoPreview = document.getElementById('videoPreview');
+            
+            // API endpoint base URL
+            const API_BASE_URL = 'http://localhost:5000';
+            
+            // Store file paths after upload
+            let uploadedFiles = {
+                audio: null,
+                lyrics: null
+            };
+            
+            // Check if both files are selected
+            function checkFilesSelected() {
+                return audioFileInput.files.length > 0 && lyricsFileInput.files.length > 0;
+            }
+            
+            // Upload files to server
+            async function uploadFiles() {
+                if (!checkFilesSelected()) {
+                    alert('Please select both audio and lyrics files');
+                    return false;
+                }
+                
+                const formData = new FormData();
+                formData.append('audio', audioFileInput.files[0]);
+                formData.append('lyrics', lyricsFileInput.files[0]);
+                
+                try {
+                    const response = await fetch(`${API_BASE_URL}/upload`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('File upload failed');
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        uploadedFiles.audio = data.audio_path;
+                        uploadedFiles.lyrics = data.lyrics_path;
+                        return true;
+                    } else {
+                        throw new Error(data.error || 'File upload failed');
+                    }
+                } catch (error) {
+                    console.error('Error uploading files:', error);
+                    statusMessage.textContent = `Error: ${error.message}`;
+                    statusContainer.classList.add('error');
+                    statusContainer.classList.remove('hidden');
+                    return false;
+                }
+            }
+            
+            // Generate lyric video
+            async function generateVideo() {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/generate`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            audio_path: uploadedFiles.audio,
+                            lyrics_path: uploadedFiles.lyrics
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Failed to start video generation');
+                    }
+                    
+                    const data = await response.json();
+                    return data.job_id;
+                } catch (error) {
+                    console.error('Error generating video:', error);
+                    statusMessage.textContent = `Error: ${error.message}`;
+                    statusContainer.classList.add('error');
+                    return null;
+                }
+            }
+            
+            // Poll job status
+            async function pollJobStatus(jobId) {
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch(`${API_BASE_URL}/status/${jobId}`);
+                        
+                        if (!response.ok) {
+                            throw new Error('Failed to get job status');
+                        }
+                        
+                        const data = await response.json();
+                        
+                        // Update status message and progress
+                        if (data.status === 'queued') {
+                            statusMessage.textContent = 'Queued: Waiting to process...';
+                            statusProgress.value = 10;
+                        } else if (data.status === 'running') {
+                            statusMessage.textContent = 'Processing: Creating your lyric video...';
+                            statusProgress.value = 50;
+                        } else if (data.status === 'done') {
+                            statusMessage.textContent = 'Complete: Your lyric video is ready!';
+                            statusProgress.value = 100;
+                            statusContainer.classList.remove('processing');
+                            statusContainer.classList.add('success');
+                            
+                            // Display video
+                            videoPreview.src = `${API_BASE_URL}/outputs/${data.output.split('/').pop()}`;
+                            videoContainer.classList.remove('hidden');
+                            
+                            // Stop polling
+                            clearInterval(pollInterval);
+                            
+                            // Re-enable generate button
+                            generateBtn.disabled = false;
+                        } else if (data.status === 'error') {
+                            statusMessage.textContent = `Error: ${data.error || 'An error occurred during processing'}`;
+                            statusContainer.classList.remove('processing');
+                            statusContainer.classList.add('error');
+                            
+                            // Stop polling
+                            clearInterval(pollInterval);
+                            
+                            // Re-enable generate button
+                            generateBtn.disabled = false;
+                        }
+                    } catch (error) {
+                        console.error('Error polling job status:', error);
+                        statusMessage.textContent = `Error: ${error.message}`;
+                        statusContainer.classList.remove('processing');
+                        statusContainer.classList.add('error');
+                        
+                        // Stop polling
+                        clearInterval(pollInterval);
+                        
+                        // Re-enable generate button
+                        generateBtn.disabled = false;
+                    }
+                }, 2000); // Poll every 2 seconds
+            }
+            
+            // Handle generate button click
+            generateBtn.addEventListener('click', async function() {
+                // Reset UI
+                statusContainer.classList.remove('error', 'success');
+                statusContainer.classList.add('processing');
+                statusContainer.classList.remove('hidden');
+                videoContainer.classList.add('hidden');
+                statusMessage.textContent = 'Uploading files...';
+                statusProgress.value = 0;
+                
+                // Disable generate button
+                generateBtn.disabled = true;
+                
+                // Upload files
+                const uploadSuccess = await uploadFiles();
+                
+                if (uploadSuccess) {
+                    statusMessage.textContent = 'Starting video generation...';
+                    statusProgress.value = 5;
+                    
+                    // Generate video
+                    const jobId = await generateVideo();
+                    
+                    if (jobId) {
+                        // Poll job status
+                        pollJobStatus(jobId);
+                    } else {
+                        // Re-enable generate button
+                        generateBtn.disabled = false;
+                    }
+                } else {
+                    // Re-enable generate button
+                    generateBtn.disabled = false;
+                }
+            });
+        });
+    </script>
+</body>
+</html>
