@@ -86,8 +86,21 @@
         </div>
         
         <div class="form-group">
+            <label>Lyrics Input</label>
+            <div>
+                <label><input type="radio" name="lyricsMode" value="file" checked> Upload Lyrics File</label>
+                <label style="margin-left:20px;"><input type="radio" name="lyricsMode" value="text"> Type Lyrics</label>
+            </div>
+        </div>
+        
+        <div class="form-group" id="lyricsFileGroup">
             <label for="lyricsFile">Upload Lyrics File (TXT):</label>
             <input type="file" id="lyricsFile" accept=".txt">
+        </div>
+        
+        <div class="form-group hidden" id="lyricsTextGroup">
+            <label for="lyricsText">Type Lyrics</label>
+            <textarea id="lyricsText" rows="6" style="width:100%" placeholder="Paste or type lyrics here..."></textarea>
         </div>
         
         <button id="generateBtn">Generate Lyric Video</button>
@@ -107,12 +120,30 @@
         document.addEventListener('DOMContentLoaded', function() {
             const audioFileInput = document.getElementById('audioFile');
             const lyricsFileInput = document.getElementById('lyricsFile');
+            const lyricsTextInput = document.getElementById('lyricsText');
+            const lyricsFileGroup = document.getElementById('lyricsFileGroup');
+            const lyricsTextGroup = document.getElementById('lyricsTextGroup');
             const generateBtn = document.getElementById('generateBtn');
             const statusContainer = document.getElementById('statusContainer');
             const statusMessage = document.getElementById('statusMessage');
             const statusProgress = document.getElementById('statusProgress');
             const videoContainer = document.getElementById('videoContainer');
             const videoPreview = document.getElementById('videoPreview');
+            
+            const lyricsModeRadios = document.querySelectorAll('input[name="lyricsMode"]');
+            let lyricsMode = 'file';
+            lyricsModeRadios.forEach(r => {
+                r.addEventListener('change', function() {
+                    lyricsMode = this.value;
+                    if (lyricsMode === 'file') {
+                        lyricsFileGroup.classList.remove('hidden');
+                        lyricsTextGroup.classList.add('hidden');
+                    } else {
+                        lyricsFileGroup.classList.add('hidden');
+                        lyricsTextGroup.classList.remove('hidden');
+                    }
+                });
+            });
             
             // API endpoint base URL
             const API_BASE_URL = 'http://localhost:5000';
@@ -125,7 +156,11 @@
             
             // Check if both files are selected
             function checkFilesSelected() {
-                return audioFileInput.files.length > 0 && lyricsFileInput.files.length > 0;
+                if (audioFileInput.files.length === 0) return false;
+                if (lyricsMode === 'file') {
+                    return lyricsFileInput.files.length > 0;
+                }
+                return (lyricsTextInput.value || '').trim().length > 0;
             }
             
             // Upload files to server
@@ -137,7 +172,11 @@
                 
                 const formData = new FormData();
                 formData.append('audio', audioFileInput.files[0]);
-                formData.append('lyrics', lyricsFileInput.files[0]);
+                if (lyricsMode === 'file') {
+                    formData.append('lyrics', lyricsFileInput.files[0]);
+                } else {
+                    formData.append('lyrics_text', lyricsTextInput.value);
+                }
                 
                 try {
                     const response = await fetch(`${API_BASE_URL}/upload`, {
@@ -220,8 +259,8 @@
                             statusContainer.classList.remove('processing');
                             statusContainer.classList.add('success');
                             
-                            // Display video
-                            videoPreview.src = `${API_BASE_URL}/outputs/${data.output.split('/').pop()}`;
+                            const outputUrl = data.output_url || `/outputs/${(data.output || '').split(/[\\/]/).pop()}`;
+                            videoPreview.src = `${API_BASE_URL}${outputUrl}`;
                             videoContainer.classList.remove('hidden');
                             
                             // Stop polling

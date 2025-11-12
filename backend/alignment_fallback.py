@@ -3,8 +3,8 @@ import json
 import argparse
 from pydub import AudioSegment
 from pydub.silence import detect_silence
-from backend.lyrics_parser import read_lyrics
-from backend.config import ALIGN_DIR
+from lyrics_parser import read_lyrics
+from config import ALIGN_DIR
 
 def align_with_silence_detection(audio_path, lyrics_path, output_json=None):
     """

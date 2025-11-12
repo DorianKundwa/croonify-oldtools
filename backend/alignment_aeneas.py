@@ -14,7 +14,7 @@ except ImportError:
     print("Warning: aeneas not available. Alignment will use fallback method.")
 
 # Import fallback alignment module
-from backend.alignment_fallback import align as align_fallback
+from alignment_fallback import align as align_fallback
 
 def align(audio_path, lyrics_path, output_json=None):
     """

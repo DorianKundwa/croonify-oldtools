@@ -10,7 +10,7 @@ from moviepy.editor import (
     concatenate_videoclips
 )
 from moviepy.video.tools.subtitles import SubtitlesClip
-from backend.config import ALIGN_DIR, UPLOAD_DIR, OUTPUT_DIR
+from config import ALIGN_DIR, UPLOAD_DIR, OUTPUT_DIR
 
 # Video configuration
 DEFAULT_WIDTH = 1920

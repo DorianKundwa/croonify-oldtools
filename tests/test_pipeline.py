@@ -74,8 +74,7 @@ def run_pipeline(audio_file, lyrics_file, clean=False):
         wav_path = upload_audio_path
         print(f"✓ Audio already in WAV format: {wav_path}")
     
-    # Step 3: Normalize audio
-    normalize_audio(wav_path, wav_path)
+    wav_path = normalize_audio(wav_path)
     print(f"✓ Audio normalized: {wav_path}")
     
     # Step 4: Align audio with lyrics
