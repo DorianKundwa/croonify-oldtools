@@ -221,7 +221,18 @@
                     });
                     
                     if (!response.ok) {
-                        throw new Error('Failed to start video generation');
+                        let errMsg = 'Failed to start video generation';
+                        try {
+                            const detail = await response.json();
+                            if (detail && detail.error) {
+                                errMsg = `Failed to start video generation: ${detail.error}`;
+                            } else {
+                                errMsg = `${errMsg} (${response.status})`;
+                            }
+                        } catch (e) {
+                            errMsg = `${errMsg} (${response.status})`;
+                        }
+                        throw new Error(errMsg);
                     }
                     
                     const data = await response.json();
