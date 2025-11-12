@@ -17,3 +17,9 @@
 2025-11-12 22:06:12,748 WARNING  * Running on all addresses.
    WARNING: This is a development server. Do not use it in a production deployment.
 2025-11-12 22:06:12,748 INFO  * Running on http://10.64.45.93:5000/ (Press CTRL+C to quit)
+2025-11-12 22:30:06,529 INFO  * Restarting with stat
+2025-11-12 22:30:07,391 WARNING  * Debugger is active!
+2025-11-12 22:30:07,393 INFO  * Debugger PIN: 142-643-649
+2025-11-12 22:30:07,574 WARNING  * Running on all addresses.
+   WARNING: This is a development server. Do not use it in a production deployment.
+2025-11-12 22:30:07,574 INFO  * Running on http://10.64.45.93:5000/ (Press CTRL+C to quit)
