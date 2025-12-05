@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dorian Lyrics Maker v1</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: min(90vw, 800px);
+            margin: 0 auto;
+            padding: clamp(10px, 3vw, 20px);
+            line-height: 1.6;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            font-size: clamp(1.5rem, 4vw, 2.5rem);
+            margin-bottom: clamp(10px, 3vw, 20px);
+        }
+        .container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: clamp(10px, 3vw, 20px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: clamp(4px, 1vw, 8px);
+            font-weight: bold;
+            font-size: clamp(14px, 2vw, 16px);
+        }
+        textarea {
+            width: 100%;
+            min-height: clamp(80px, 15vh, 120px);
+            padding: clamp(6px, 1.5vw, 10px);
+            resize: vertical;
+            font-family: inherit;
+            font-size: clamp(12px, 1.8vw, 15px);
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            transition: border-color 0.2s ease;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+        }
+        .hint {
+            font-size: clamp(10px, 1.5vw, 13px);
+            color: #666;
+            margin-top: clamp(2px, 0.5vw, 4px);
+            line-height: 1.4;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: clamp(8px, 2vw, 12px) clamp(12px, 3vw, 20px);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: clamp(14px, 2vw, 18px);
+            font-weight: 500;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: clamp(15px, 3vw, 25px);
+            padding: clamp(8px, 2vw, 12px);
+            border-radius: 6px;
+            font-size: clamp(12px, 1.8vw, 15px);
+        }
+        .status.processing {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+        }
+        .status.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+        }
+        .hidden {
+            display: none;
+        }
+        video {
+            width: 100%;
+            margin-top: clamp(15px, 3vw, 25px);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        progress {
+            width: 100%;
+            height: clamp(8px, 1.5vw, 12px);
+            border-radius: 6px;
+            overflow: hidden;
+            appearance: none;
+        }
+        progress::-webkit-progress-bar {
+            background-color: #e0e0e0;
+            border-radius: 6px;
+        }
+        progress::-webkit-progress-value {
+            background: linear-gradient(90deg, #4CAF50, #45a049);
+            border-radius: 6px;
+            transition: width 0.3s ease;
+        }
+        progress::-moz-progress-bar {
+            background: linear-gradient(90deg, #4CAF50, #45a049);
+            border-radius: 6px;
+        }
+        #videoContainer { position: relative; }
+        #lyricsOverlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            font-size: clamp(1.5rem, 4vw, 3rem);
+            color: #ffffff;
+            text-shadow: 2px 2px 0 rgba(0,0,0,0.4), 0 0 12px rgba(0,0,0,0.5);
+            opacity: 0;
+            transition: opacity 300ms ease, transform 300ms ease;
+            padding: 0 5%;
+            text-align: center;
+            line-height: 1.4;
+        }
+        #lyricsOverlay.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .word { 
+            opacity: 0.9; 
+            transition: opacity 0.2s ease, color 0.2s ease;
+        }
+        .word-active { 
+            opacity: 1; 
+            color: #7ef17e;
+            text-shadow: 0 0 8px rgba(126, 241, 126, 0.5);
+        }
+        #syncBadge {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.8);
+            color: #fff;
+            font-size: clamp(10px, 1.5vw, 14px);
+            padding: 6px 8px;
+            border-radius: 12px;
+            opacity: 0;
+            transition: opacity 200ms ease;
+            backdrop-filter: blur(2px);
+            font-weight: 500;
+        }
+        #syncBadge.show { opacity: 1; }
+    </style>
+</head>
+<body>
+    <h1>Dorian Lyrics Maker v1</h1>
+    
+    <div class="container">
+        <div class="form-group">
+            <label for="audioFile">Upload Audio File (MP3/WAV):</label>
+            <input type="file" id="audioFile" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.aiff,.aif,.mp4,.webm" style="padding: clamp(6px, 1.5vw, 10px); font-size: clamp(12px, 1.8vw, 15px);">
+        </div>
+
+        <div class="form-group">
+            <label for="outroFile">Upload Outro Audio (optional):</label>
+            <input type="file" id="outroFile" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.aiff,.aif,.mp4,.webm">
+            <div class="hint">If provided, the outro audio plays after the lyric section without on-screen lyrics.</div>
+        </div>
+        
+        <div class="form-group">
+            <label for="lyricsFile">Upload Lyrics File (TXT/LRC, optional):</label>
+            <input type="file" id="lyricsFile" accept=".txt,.lrc">
+            <div class="hint">If you also type lyrics below, the typed lyrics will be used.</div>
+        </div>
+
+        <div class="form-group">
+            <label for="lyricsText">Type Lyrics (optional):</label>
+            <textarea id="lyricsText" placeholder="Enter lyrics, one line per lyric"></textarea>
+            <div class="hint">Blank lines are ignored. This overrides the uploaded lyrics file if both are provided.</div>
+        </div>
+        
+        <div class="form-group">
+            <label>Background Type:</label>
+            <div>
+                <label style="margin-right:12px;"><input type="radio" name="bgType" id="bgTypeColor" checked> Color</label>
+                <label><input type="radio" name="bgType" id="bgTypeImage"> Image</label>
+            </div>
+        </div>
+
+        <div class="form-group" id="bgColorGroup">
+            <label for="bgColor">Background Color:</label>
+            <input type="color" id="bgColor" value="#000000" style="padding: clamp(6px, 1.5vw, 10px); height: clamp(30px, 5vw, 40px);">
+        </div>
+
+        <div class="form-group hidden" id="bgImageGroup">
+            <label for="bgImageFile">Background Image (PNG/JPG):</label>
+            <input type="file" id="bgImageFile" accept=".png,.jpg,.jpeg">
+            <div class="hint">Large images are resized to fit 1920x1080 while preserving aspect ratio.</div>
+        </div>
+
+        
+
+        <div class="form-group">
+            <label for="fontSelect">Font:</label>
+            <select id="fontSelect">
+                <option value="Arial">Arial</option>
+            </select>
+            <div class="hint">Lists fonts from assets/fonts and common Windows fonts.</div>
+        </div>
+
+        <div class="form-group">
+            <label for="songTitle">Song Title:</label>
+            <input type="text" id="songTitle" placeholder="e.g., Perfect">
+        </div>
+
+        <div class="form-group">
+            <label for="artistName">Artist Name:</label>
+            <input type="text" id="artistName" placeholder="e.g., Ed Sheeran">
+        </div>
+
+        <div class="form-group">
+            <label for="fontSize">Font Size:</label>
+            <input type="number" id="fontSize" value="70" min="24" max="140" step="2" style="padding: clamp(6px, 1.5vw, 10px); font-size: clamp(12px, 1.8vw, 15px);">
+        </div>
+
+        <div class="form-group">
+            <label for="sepEnableToggle">Enable Stem Separation:</label>
+            <input type="checkbox" id="sepEnableToggle" checked>
+            <div class="hint">Use vocals/instrumental for better sync; uncheck for full mix.</div>
+        </div>
+
+        <div class="form-group">
+            <label for="pauseSensitivity">Pause Detection Sensitivity:</label>
+            <input type="range" id="pauseSensitivity" min="1" max="10" value="6">
+        </div>
+        
+        <button id="generateBtn">Generate Lyric Video</button>
+        
+        <div id="statusContainer" class="status hidden">
+            <p id="statusMessage">Processing...</p>
+            <progress id="statusProgress" value="0" max="100"></progress>
+        </div>
+        
+        <div id="videoContainer" class="hidden">
+            <h3>Your Lyric Video:</h3>
+            <video id="videoPreview" controls></video>
+            <div id="lyricsOverlay" class="hidden"></div>
+            <div id="syncBadge" class="hidden"></div>
+        </div>
+
+        <div id="thumbContainer" class="hidden">
+            <h3>Your Thumbnail:</h3>
+            <img id="thumbPreview" alt="Generated thumbnail" style="max-width:100%;border-radius:4px;" />
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const audioFileInput = document.getElementById('audioFile');
+            const outroFileInput = document.getElementById('outroFile');
+            const lyricsFileInput = document.getElementById('lyricsFile');
+            const lyricsText = document.getElementById('lyricsText');
+            const generateBtn = document.getElementById('generateBtn');
+            const statusContainer = document.getElementById('statusContainer');
+            const statusMessage = document.getElementById('statusMessage');
+            const statusProgress = document.getElementById('statusProgress');
+            const videoContainer = document.getElementById('videoContainer');
+            const videoPreview = document.getElementById('videoPreview');
+            const bgColorInput = document.getElementById('bgColor');
+            const bgTypeColor = document.getElementById('bgTypeColor');
+            const bgTypeImage = document.getElementById('bgTypeImage');
+            const bgColorGroup = document.getElementById('bgColorGroup');
+            const bgImageGroup = document.getElementById('bgImageGroup');
+            const bgImageFile = document.getElementById('bgImageFile');
+            const sepEnableToggle = document.getElementById('sepEnableToggle');
+            const pauseSensitivity = document.getElementById('pauseSensitivity');
+            
+            const fontSelect = document.getElementById('fontSelect');
+            const fontSizeInput = document.getElementById('fontSize');
+            const songTitleInput = document.getElementById('songTitle');
+            const artistNameInput = document.getElementById('artistName');
+            const thumbContainer = document.getElementById('thumbContainer');
+            const thumbPreview = document.getElementById('thumbPreview');
+            const lyricsOverlay = document.getElementById('lyricsOverlay');
+            const syncBadge = document.getElementById('syncBadge');
+            
+            // API endpoint base URL
+            const API_BASE_URL = 'http://localhost:5000';
+            
+            // Store file paths after upload
+            let uploadedFiles = {
+                audio: null,
+                lyrics: null,
+                outro: null,
+                background: null
+            };
+
+
+
+            function currentBgType() {
+                return bgTypeImage.checked ? 'image' : 'color';
+            }
+
+            function updateBgVisibility() {
+                const t = currentBgType();
+                if (t === 'image') {
+                    bgImageGroup.classList.remove('hidden');
+                    bgColorGroup.classList.add('hidden');
+                } else {
+                    bgImageGroup.classList.add('hidden');
+                    bgColorGroup.classList.remove('hidden');
+                }
+            }
+
+            bgTypeColor.addEventListener('change', updateBgVisibility);
+            bgTypeImage.addEventListener('change', updateBgVisibility);
+            updateBgVisibility();
+
+            
+
+            // Load fonts from backend
+            async function loadFonts() {
+                try {
+                    const res = await fetch(`${API_BASE_URL}/fonts`, { method: 'GET' });
+                    if (!res.ok) return; // keep default
+                    const data = await res.json();
+                    const fonts = Array.isArray(data.fonts) ? data.fonts : [];
+                    const defaultFont = data.default || 'Arial';
+                    // Clear and populate
+                    fontSelect.innerHTML = '';
+                    fonts.forEach(f => {
+                        const opt = document.createElement('option');
+                        opt.value = f;
+                        opt.textContent = f;
+                        fontSelect.appendChild(opt);
+                    });
+                    // Set default if present
+                    const options = Array.from(fontSelect.options).map(o => o.value);
+                    if (options.includes(defaultFont)) {
+                        fontSelect.value = defaultFont;
+                    }
+                } catch (e) {
+                    // ignore and keep default
+                    console.warn('Failed to load fonts:', e);
+                }
+            }
+            
+            // Check if audio is selected and either typed lyrics or file provided
+            function checkFilesSelected() {
+                const hasAudio = audioFileInput.files.length > 0;
+                const hasLyricsFile = lyricsFileInput.files.length > 0;
+                const hasTypedLyrics = lyricsText.value.trim().length > 0;
+                return hasAudio && (hasLyricsFile || hasTypedLyrics);
+            }
+            
+            // Upload files to server
+            async function uploadFiles() {
+                if (!checkFilesSelected()) {
+                    alert('Please select an audio file and provide lyrics (file or typed).');
+                    return false;
+                }
+                
+                const formData = new FormData();
+                const audioFile = audioFileInput.files[0];
+                
+                // Validate audio file size (max 100MB)
+                if (audioFile.size > 100 * 1024 * 1024) {
+                    alert('Audio file is too large. Maximum size is 100MB.');
+                    return false;
+                }
+                
+                formData.append('audio', audioFile);
+                
+                const typed = lyricsText.value.trim();
+                if (typed.length > 0) {
+                    const blob = new Blob([typed], { type: 'text/plain' });
+                    formData.append('lyrics', blob, 'typed_lyrics.txt');
+                } else {
+                    const lyricsFile = lyricsFileInput.files[0];
+                    if (lyricsFile.size > 1024 * 1024) { // 1MB max for lyrics
+                        alert('Lyrics file is too large. Maximum size is 1MB.');
+                        return false;
+                    }
+                    formData.append('lyrics', lyricsFile);
+                }
+
+                if (currentBgType() === 'image' && bgImageFile.files.length > 0) {
+                    const imgFile = bgImageFile.files[0];
+                    const ext = (imgFile.name.split('.').pop() || '').toLowerCase();
+                    if (!['png','jpg','jpeg'].includes(ext)) {
+                        alert('Background image must be PNG or JPG');
+                        return false;
+                    }
+                    if (imgFile.size > 30 * 1024 * 1024) {
+                        alert('Background image is too large. Maximum size is 30MB.');
+                        return false;
+                    }
+                    formData.append('background', imgFile);
+                }
+
+                // Optional outro audio
+                if (outroFileInput.files.length > 0) {
+                    const outroFile = outroFileInput.files[0];
+                    if (outroFile.size > 100 * 1024 * 1024) { // 100MB max for outro
+                        alert('Outro audio file is too large. Maximum size is 100MB.');
+                        return false;
+                    }
+                    formData.append('outro', outroFile);
+                }
+                
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+                    
+                    const response = await fetch(`${API_BASE_URL}/upload`, {
+                        method: 'POST',
+                        body: formData,
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(timeoutId);
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
+                        throw new Error(errorData.error || `Upload failed: ${response.statusText}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        uploadedFiles.audio = data.audio_path;
+                        uploadedFiles.lyrics = data.lyrics_path;
+                        uploadedFiles.outro = data.outro_path || null;
+                        uploadedFiles.background = data.background_path || null;
+                        return true;
+                    } else {
+                        throw new Error(data.error || 'Upload failed');
+                    }
+                } catch (error) {
+                    console.error('Upload error:', error);
+                    let errorMessage = 'Upload failed';
+                    if (error.name === 'AbortError') {
+                        errorMessage = 'Upload timeout. Please try again with smaller files.';
+                    } else if (error.message) {
+                        errorMessage = `Upload error: ${error.message}`;
+                    }
+                    statusMessage.textContent = errorMessage;
+                    statusContainer.classList.add('error');
+                    return false;
+                }
+            }
+            
+            // Generate lyric video
+            async function generateVideo() {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/generate`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify((() => {
+                            const fontSize = parseInt(fontSizeInput.value, 10) || 70;
+                            if (fontSize < 24 || fontSize > 140) {
+                                throw new Error('Font size must be between 24 and 140');
+                            }
+                            
+                            const payload = {
+                                audio_path: uploadedFiles.audio,
+                                lyrics_path: uploadedFiles.lyrics,
+                                font: fontSelect.value,
+                                fontsize: fontSize,
+                                separation_engine: sepEnableToggle.checked ? 'auto' : 'none'
+                            };
+                            const sens = parseInt(pauseSensitivity.value, 10) || 6;
+                            const thr = -20 - ((sens - 1) * 1.5);
+                            const minSil = 0.6 - ((sens - 1) * 0.04);
+                            const fw = 0.25 - ((sens - 1) * 0.01);
+                            payload.pause = {
+                                threshold_db: `${thr}dB`,
+                                min_silence_sec: parseFloat(minSil.toFixed(2)),
+                                flux_window_sec: parseFloat(fw.toFixed(2)),
+                                min_pause_sec: 0.2
+                            };
+                            const songTitle = (songTitleInput.value || '').trim();
+                            const artistName = (artistNameInput.value || '').trim();
+                            if (songTitle.length > 0) payload.song_title = songTitle;
+                            if (artistName.length > 0) payload.artist_name = artistName;
+                            if (currentBgType() === 'image' && uploadedFiles.background) {
+                                payload.bg_image = uploadedFiles.background;
+                            } else {
+                                payload.bg_color = bgColorInput.value;
+                            }
+                            if (uploadedFiles.outro) {
+                                payload.outro_path = uploadedFiles.outro;
+                            }
+                            return payload;
+                        })())
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ error: 'Generation failed' }));
+                        throw new Error(errorData.error || `Generation failed: ${response.statusText}`);
+                    }
+                    
+                    const data = await response.json();
+                    if (!data.job_id) {
+                        throw new Error('No job ID received');
+                    }
+                    
+                    return data.job_id;
+                } catch (error) {
+                    console.error('Error generating video:', error);
+                    let errorMessage = 'Video generation failed';
+                    if (error.name === 'AbortError') {
+                        errorMessage = 'Generation timeout. Please try again.';
+                    } else if (error.message) {
+                        errorMessage = `Error: ${error.message}`;
+                    }
+                    statusMessage.textContent = errorMessage;
+                    statusContainer.classList.add('error');
+                    return null;
+                }
+            }
+            
+            // Poll job status
+            async function pollJobStatus(jobId) {
+                let pollCount = 0;
+                const maxPolls = 900; // 30 minutes max (900 * 2 seconds)
+                const pollInterval = setInterval(async () => {
+                    pollCount++;
+                    
+                    // Safety check to prevent infinite polling
+                    if (pollCount > maxPolls) {
+                        console.error('Max polling attempts reached');
+                        statusMessage.textContent = 'Processing timeout. Please try again with smaller files.';
+                        statusContainer.classList.remove('processing');
+                        statusContainer.classList.add('error');
+                        clearInterval(pollInterval);
+                        generateBtn.disabled = false;
+                        return;
+                    }
+                    
+                    try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout per poll
+                        
+                        const response = await fetch(`${API_BASE_URL}/status/${jobId}`, {
+                            signal: controller.signal
+                        });
+                        
+                        clearTimeout(timeoutId);
+                        
+                        if (!response.ok) {
+                            throw new Error(`Failed to get job status: ${response.statusText}`);
+                        }
+                        
+                        const data = await response.json();
+                        
+                        // Update status message and progress
+                        if (data.status === 'queued') {
+                            statusMessage.textContent = 'Queued: Waiting to process...';
+                            statusProgress.value = Math.min(15, statusProgress.value + 1);
+                        } else if (data.status === 'running') {
+                            const progress = data.progress || 50;
+                            statusMessage.textContent = data.stage || 'Processing: Creating your lyric video...';
+                            statusProgress.value = Math.min(95, progress);
+                        } else if (data.status === 'done') {
+                            statusMessage.textContent = 'Complete: Your lyric video is ready!';
+                            statusProgress.value = 100;
+                            statusContainer.classList.remove('processing');
+                            statusContainer.classList.add('success');
+                            
+                            // Display video using output_url if available, fallback to constructed path
+                            let previewUrl = null;
+                            if (data.output_url) {
+                                previewUrl = data.output_url.startsWith('http') ? data.output_url : `${API_BASE_URL}${data.output_url}`;
+                            } else if (data.output) {
+                                previewUrl = `${API_BASE_URL}/outputs/${data.output.split(/[/\\]/).pop()}`;
+                            }
+                            
+                            if (previewUrl) {
+                                videoPreview.src = previewUrl;
+                                videoContainer.classList.remove('hidden');
+                            }
+
+                            if (data.alignment_url) {
+                                if (typeof data.main_vocal_onset === 'number') {
+                                    mainVocalOnsetSec = data.main_vocal_onset;
+                                } else {
+                                    mainVocalOnsetSec = null;
+                                }
+                                const alignUrl = data.alignment_url.startsWith('http') ? data.alignment_url : `${API_BASE_URL}${data.alignment_url}`;
+                                setupLyricsOverlay(alignUrl);
+                            }
+
+                            // Show thumbnail if available
+                            let thumbUrl = null;
+                            if (data.thumbnail_url) {
+                                thumbUrl = data.thumbnail_url.startsWith('http') ? data.thumbnail_url : `${API_BASE_URL}${data.thumbnail_url}`;
+                            }
+                            if (thumbUrl) {
+                                thumbPreview.src = thumbUrl;
+                                thumbContainer.classList.remove('hidden');
+                            }
+                            
+                            clearInterval(pollInterval);
+                            generateBtn.disabled = false;
+                        } else if (data.status === 'error') {
+                            statusMessage.textContent = `Error: ${data.error || 'An error occurred during processing'}`;
+                            statusContainer.classList.remove('processing');
+                            statusContainer.classList.add('error');
+                            
+                            clearInterval(pollInterval);
+                            generateBtn.disabled = false;
+                        }
+                    } catch (error) {
+                        console.error('Error polling job status:', error);
+                        let errorMessage = 'Failed to get job status';
+                        if (error.name === 'AbortError') {
+                            errorMessage = 'Status check timeout. Retrying...';
+                        } else if (error.message) {
+                            errorMessage = `Error: ${error.message}`;
+                        }
+                        statusMessage.textContent = errorMessage;
+                        
+                        // Don't clear interval on polling errors, retry
+                        if (pollCount > 10) { // After 20 seconds of polling errors
+                            statusContainer.classList.remove('processing');
+                            statusContainer.classList.add('error');
+                            clearInterval(pollInterval);
+                            generateBtn.disabled = false;
+                        }
+                    }
+                }, 2000);
+            }
+            
+            // Handle generate button click
+            generateBtn.addEventListener('click', async function() {
+                // Prevent double-click
+                if (generateBtn.disabled) return;
+                
+                // Ensure fonts are loaded before generating
+                if (fontSelect.options.length <= 1) {
+                    await loadFonts();
+                }
+                
+                // Clear previous errors
+                statusContainer.classList.remove('error', 'success');
+                statusContainer.classList.add('processing');
+                statusContainer.classList.remove('hidden');
+                videoContainer.classList.add('hidden');
+                thumbContainer.classList.add('hidden');
+                statusMessage.textContent = 'Uploading files...';
+                statusProgress.value = 0;
+                
+                generateBtn.disabled = true;
+                
+                try {
+                    const uploadSuccess = await uploadFiles();
+                    
+                    if (uploadSuccess) {
+                        statusMessage.textContent = 'Starting video generation...';
+                        statusProgress.value = 5;
+                        
+                        const jobId = await generateVideo();
+                        
+                        if (jobId) {
+                            pollJobStatus(jobId);
+                        } else {
+                            generateBtn.disabled = false;
+                        }
+                    } else {
+                        generateBtn.disabled = false;
+                    }
+                } catch (error) {
+                    console.error('Unexpected error in generate button handler:', error);
+                    statusMessage.textContent = 'Unexpected error occurred. Please try again.';
+                    statusContainer.classList.remove('processing');
+                    statusContainer.classList.add('error');
+                    generateBtn.disabled = false;
+                }
+            });
+
+            // Load fonts on page ready
+            loadFonts();
+
+            let alignmentEntries = [];
+            let audioCtx = null;
+            let analyser = null;
+            let mediaSrc = null;
+            let startDelayMs = 0;
+            let appliedStartDelayMs = 0;
+            let easingStart = 0;
+            let easingDuration = 500;
+            let rafId = null;
+            let stalled = false;
+            let lastText = '';
+            let currentLineIdx = -1;
+            let currentWordIdx = -1;
+            let mainVocalOnsetSec = null;
+            let globalAlignShiftSec = 0;
+
+            async function setupLyricsOverlay(alignmentUrl) {
+                try {
+                    const res = await fetch(alignmentUrl);
+                    if (!res.ok) throw new Error('Failed to load alignment data');
+                    const data = await res.json();
+                    const frags = Array.isArray(data.fragments) ? data.fragments : [];
+                    if (!frags.length) throw new Error('No alignment fragments found');
+                    
+                    globalAlignShiftSec = 0;
+                    alignmentEntries = frags.map((f, i) => ({
+                        i,
+                        start: Math.max(0, parseFloat(f.begin || 0)),
+                        end: Math.max(0, parseFloat(f.end || 0)),
+                        text: Array.isArray(f.lines) ? (f.lines[0] || '') : (f.lines || ''),
+                        words: Array.isArray(f.words) ? f.words.map(w => ({
+                            text: String(w.text || ''),
+                            start: Math.max(0, parseFloat(w.start || 0)),
+                            end: Math.max(0, parseFloat(w.end || 0))
+                        })) : []
+                    }));
+                    alignmentEntries.sort((a,b)=>a.start-b.start);
+                    lyricsOverlay.classList.remove('hidden');
+                    syncBadge.classList.remove('hidden');
+                    wirePlaybackEvents();
+                } catch (e) {
+                    console.error('Failed to setup lyrics overlay:', e);
+                    statusMessage.textContent = `Lyrics overlay error: ${e.message}`;
+                    statusContainer.classList.add('error');
+                }
+            }
+
+            function ensureAudioCtx() {
+                if (audioCtx) return;
+                try {
+                    const Ctx = window.AudioContext || window.webkitAudioContext;
+                    if (!Ctx) {
+                        console.warn('Web Audio API not supported');
+                        return;
+                    }
+                    audioCtx = new Ctx();
+                    analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 2048;
+                } catch (e) {
+                    console.error('Failed to create audio context:', e);
+                }
+            }
+
+            function wirePlaybackEvents() {
+                ensureAudioCtx();
+                if (audioCtx && !mediaSrc) {
+                    try {
+                        mediaSrc = audioCtx.createMediaElementSource(videoPreview);
+                        mediaSrc.connect(analyser);
+                        // Do not connect analyser to destination to avoid duplicate audio path
+                    } catch (e) {
+                        console.warn('Failed to create media element source:', e);
+                    }
+                }
+                videoPreview.addEventListener('play', onPlay);
+                videoPreview.addEventListener('playing', onPlaying);
+                videoPreview.addEventListener('pause', onPause);
+                videoPreview.addEventListener('waiting', onWaiting);
+                videoPreview.addEventListener('stalled', onWaiting);
+                videoPreview.addEventListener('seeked', onSeeked);
+                videoPreview.addEventListener('ratechange', onRateChange);
+                videoPreview.addEventListener('error', onError);
+                videoPreview.addEventListener('loadedmetadata', onLoadedMetadata);
+            }
+
+            function onPlay() {
+                easingStart = performance.now();
+                startDelayMs = 0;
+                appliedStartDelayMs = 0;
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                detectAudioStart();
+                startRaf();
+            }
+
+            function onPlaying() {
+                if (stalled) {
+                    stalled = false;
+                    easingStart = performance.now();
+                    detectAudioStart();
+                }
+                if (startDelayMs === 0) startDelayMs = Math.max(0, performance.now() - easingStart);
+                showBadge(startDelayMs);
+            }
+
+            function onPause() {
+                stopRaf();
+                lyricsOverlay.classList.remove('show');
+            }
+
+            function onWaiting() {
+                stalled = true;
+            }
+
+            function onSeeked() {
+                stalled = false;
+                easingStart = performance.now();
+            }
+
+            function onRateChange() {
+                easingStart = performance.now();
+            }
+
+            function onError(e) {
+                console.error('Video playback error:', e);
+                statusMessage.textContent = 'Video playback error. Please try refreshing the page.';
+                statusContainer.classList.add('error');
+                stopRaf();
+            }
+
+            function onLoadedMetadata() {
+                console.log('Video metadata loaded, duration:', videoPreview.duration);
+            }
+
+            function detectAudioStart() {
+                if (!analyser) {
+                    console.warn('Audio analyser not available');
+                    return;
+                }
+                const buf = new Uint8Array(analyser.fftSize);
+                let aboveCount = 0;
+                const threshold = 10;
+                const needed = 4;
+                const startAt = performance.now();
+                let timeoutId = null;
+                
+                function cleanup() {
+                    if (timeoutId) clearTimeout(timeoutId);
+                }
+                
+                function step() {
+                    if (!videoPreview.paused && !videoPreview.ended) {
+                        try {
+                            analyser.getByteTimeDomainData(buf);
+                            let sum = 0;
+                            for (let i=0;i<buf.length;i++){const v=buf[i]-128;sum+=v*v;}
+                            const rms = Math.sqrt(sum/buf.length);
+                            if (rms>threshold) aboveCount++; else aboveCount=0;
+                            if (aboveCount>=needed) {
+                                startDelayMs = Math.max(0, performance.now() - startAt);
+                                showBadge(startDelayMs);
+                                cleanup();
+                                return;
+                            }
+                            // Timeout after 10 seconds to prevent infinite loops
+                            if (performance.now() - startAt > 10000) {
+                                console.warn('Audio start detection timeout');
+                                cleanup();
+                                return;
+                            }
+                            requestAnimationFrame(step);
+                        } catch (e) {
+                            console.error('Error in audio detection:', e);
+                            cleanup();
+                        }
+                    } else {
+                        cleanup();
+                    }
+                }
+                requestAnimationFrame(step);
+            }
+
+            function startRaf() {
+                if (rafId) cancelAnimationFrame(rafId);
+                function loop() {
+                    rafId = requestAnimationFrame(loop);
+                    if (stalled) return;
+                    const now = performance.now();
+                    const effective = Math.max(0, (videoPreview.currentTime * 1000));
+                    const effectiveSec = effective/1000;
+                    const idx = findFragmentIndex(effectiveSec);
+                    if (idx>=0) {
+                        const entry = alignmentEntries[idx];
+                        if (idx !== currentLineIdx) {
+                            renderLine(entry);
+                            currentLineIdx = idx;
+                            currentWordIdx = -1;
+                            lastText = entry.text || '';
+                            lyricsOverlay.classList.add('show');
+                        }
+                        if (entry.words && entry.words.length) {
+                            const widx = findWordIndex(entry.words, effectiveSec);
+                            if (widx !== currentWordIdx) {
+                                highlightWord(widx);
+                                currentWordIdx = widx;
+                            }
+                        }
+                    }
+                }
+                rafId = requestAnimationFrame(loop);
+            }
+
+            function stopRaf() {
+                if (rafId) cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+
+            function findFragmentIndex(t) {
+                if (!alignmentEntries.length) return -1;
+                let lo=0, hi=alignmentEntries.length-1, ans=-1;
+                while (lo<=hi) {
+                    const mid=(lo+hi)>>1;
+                    const f=alignmentEntries[mid];
+                    if (f.start<=t) { ans=mid; lo=mid+1; } else { hi=mid-1; }
+                }
+                if (ans>=0) {
+                    const f=alignmentEntries[ans];
+                    if (t>=f.start && t<f.end) return ans;
+                }
+                return -1;
+            }
+
+            function showBadge(ms) {
+                const val = Math.round(ms);
+                syncBadge.textContent = `Synced ${val} ms`;
+                syncBadge.classList.add('show');
+                setTimeout(()=>{syncBadge.classList.remove('show');}, 1200);
+            }
+
+            function renderLine(entry) {
+                const hasWords = entry.words && entry.words.length;
+                if (!hasWords) {
+                    lyricsOverlay.textContent = entry.text || '';
+                    return;
+                }
+                const frag = document.createDocumentFragment();
+                for (let i=0;i<entry.words.length;i++) {
+                    const span = document.createElement('span');
+                    span.className = 'word';
+                    span.textContent = entry.words[i].text + (i < entry.words.length - 1 ? ' ' : '');
+                    const conf = typeof entry.words[i].confidence === 'number' ? entry.words[i].confidence : null;
+                    if (conf !== null) {
+                        const clamped = Math.max(0, Math.min(1, conf));
+                        const glow = Math.round(4 + clamped * 8);
+                        span.style.textShadow = `0 0 ${glow}px rgba(126, 241, 126, ${0.2 + 0.6 * clamped})`;
+                    }
+                    frag.appendChild(span);
+                }
+                lyricsOverlay.innerHTML = '';
+                lyricsOverlay.appendChild(frag);
+            }
+
+            function findWordIndex(words, t) {
+                let lo=0, hi=words.length-1, ans=-1;
+                while (lo<=hi) {
+                    const mid=(lo+hi)>>1;
+                    const w=words[mid];
+                    if (w.start<=t) { ans=mid; lo=mid+1; } else { hi=mid-1; }
+                }
+                if (ans>=0) {
+                    const w=words[ans];
+                    if (t>=w.start && t<w.end) return ans;
+                }
+                return -1;
+            }
+
+            function highlightWord(idx) {
+                const children = lyricsOverlay.children;
+                for (let i=0;i<children.length;i++) {
+                    const el = children[i];
+                    if (i === idx) el.classList.add('word-active'); else el.classList.remove('word-active');
+                }
+            }
+        });
+    </script>
+</body>
+</html>

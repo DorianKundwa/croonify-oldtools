@@ -1,0 +1,65 @@
+{
+  "name": "dorian-lyrics-maker-desktop",
+  "version": "1.0.0",
+  "description": "Desktop lyric video maker with synchronized audio and per-word highlighting",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build-win": "electron-builder --win",
+    "build-mac": "electron-builder --mac",
+    "build-linux": "electron-builder --linux",
+    "dev": "electron . --dev",
+    "test": "python tests/test_pipeline.py"
+  },
+  "keywords": [
+    "lyrics",
+    "video",
+    "audio",
+    "sync",
+    "desktop"
+  ],
+  "author": "Dorian Lyrics Maker",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1"
+  },
+  "build": {
+    "appId": "com.dorianlyricsmaker.app",
+    "productName": "Dorian Lyrics Maker",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "renderer.js",
+      "preload.js",
+      "frontend/**/*",
+      "backend/**/*",
+      "requirements.txt",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

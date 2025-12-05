@@ -1,0 +1,8 @@
+Hello world
+This is a test
+
+These are sample lyrics
+For testing the parser
+
+Multiple lines
+With some empty ones

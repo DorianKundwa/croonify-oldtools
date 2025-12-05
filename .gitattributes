@@ -1,0 +1,14 @@
+* text=auto
+
+# Treat common image/video/audio as binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
+*.flac binary
+*.m4a binary
