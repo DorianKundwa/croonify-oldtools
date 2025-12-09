@@ -374,6 +374,178 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             pass
 
 
+def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, session_dir=None, base_name=None):
+    try:
+        if not (instrumental_path and os.path.exists(instrumental_path) and session_dir and base_name):
+            return
+        inst_wav = instrumental_path
+        try:
+            if os.path.splitext(instrumental_path)[1].lower() != ".wav":
+                inst_wav_candidate = os.path.join(os.path.dirname(instrumental_path), f"{os.path.splitext(os.path.basename(instrumental_path))[0]}.wav")
+                convert_to_wav(instrumental_path, inst_wav_candidate)
+                normalize_audio(inst_wav_candidate, inst_wav_candidate)
+                inst_wav = inst_wav_candidate
+            else:
+                normalize_audio(inst_wav, inst_wav)
+        except Exception:
+            pass
+        width = 1920
+        height = 1080
+        fps = 24
+        encoder = FFMPEG_ENCODER or 'libx264'
+        preset = FFMPEG_PRESET or 'ultrafast'
+        threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
+        tune = FFMPEG_TUNE
+        crf = FFMPEG_CRF
+        instrument_segment = os.path.join(session_dir, f"{base_name}_instrument_base.mp4")
+        final_path = os.path.join(session_dir, f"{base_name}_instrument.mp4")
+        use_image = False
+        try:
+            use_image = bool(bg_image_path and os.path.exists(bg_image_path))
+        except Exception:
+            use_image = False
+        if use_image:
+            ffmpeg_cmd = [
+                FFMPEG_PATH, '-y',
+                '-loop', '1', '-i', bg_image_path,
+                '-i', inst_wav,
+                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                '-c:v', encoder, '-preset', str(preset),
+                *( ['-tune', str(tune)] if tune else [] ),
+                *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-ar', '44100',
+                '-ac', '2',
+                '-b:a', '192k',
+                '-shortest',
+                '-r', str(fps),
+                '-threads', threads,
+                '-movflags', 'faststart',
+                instrument_segment,
+            ]
+        else:
+            hex_color = '#000000'
+            try:
+                if isinstance(bg_color, tuple) and len(bg_color) == 3:
+                    hex_color = f"#{bg_color[0]:02x}{bg_color[1]:02x}{bg_color[2]:02x}"
+            except Exception:
+                pass
+            color_src = f"color=c={hex_color}:s={width}x{height}:r={fps}"
+            ffmpeg_cmd = [
+                FFMPEG_PATH, '-y',
+                '-f', 'lavfi', '-i', color_src,
+                '-i', inst_wav,
+                '-c:v', encoder, '-preset', str(preset),
+                *( ['-tune', str(tune)] if tune else [] ),
+                *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-ar', '44100',
+                '-ac', '2',
+                '-b:a', '192k',
+                '-shortest',
+                '-r', str(fps),
+                '-threads', threads,
+                '-movflags', 'faststart',
+                instrument_segment,
+            ]
+        try:
+            subprocess.run(ffmpeg_cmd, check=True)
+        except Exception:
+            return
+        if outro_path and os.path.exists(outro_path):
+            outro_base = os.path.splitext(os.path.basename(outro_path))[0]
+            outro_wav = os.path.join(UPLOAD_DIR, f"{outro_base}.wav")
+            try:
+                convert_to_wav(outro_path, outro_wav)
+                normalize_audio(outro_wav, outro_wav)
+            except Exception:
+                pass
+            outro_segment = os.path.join(session_dir, f"{base_name}_instrument_outro.mp4")
+            if use_image:
+                outro_cmd = [
+                    FFMPEG_PATH, '-y',
+                    '-loop', '1', '-i', bg_image_path,
+                    '-i', outro_wav,
+                    '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                    '-c:v', encoder, '-preset', str(preset),
+                    *( ['-tune', str(tune)] if tune else [] ),
+                    *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac',
+                    '-ar', '44100',
+                    '-ac', '2',
+                    '-b:a', '192k',
+                    '-shortest',
+                    '-r', str(fps),
+                    '-threads', threads,
+                    '-movflags', 'faststart',
+                    outro_segment,
+                ]
+            else:
+                color_src2 = color_src
+                outro_cmd = [
+                    FFMPEG_PATH, '-y',
+                    '-f', 'lavfi', '-i', color_src2,
+                    '-i', outro_wav,
+                    '-c:v', encoder, '-preset', str(preset),
+                    *( ['-tune', str(tune)] if tune else [] ),
+                    *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac',
+                    '-ar', '44100',
+                    '-ac', '2',
+                    '-b:a', '192k',
+                    '-shortest',
+                    '-r', str(fps),
+                    '-threads', threads,
+                    '-movflags', 'faststart',
+                    outro_segment,
+                ]
+            try:
+                subprocess.run(outro_cmd, check=True)
+            except Exception:
+                outro_segment = None
+            if outro_segment and os.path.exists(outro_segment):
+                try:
+                    reenc_cmd = [
+                        FFMPEG_PATH, '-y',
+                        '-i', instrument_segment,
+                        '-i', outro_segment,
+                        '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]',
+                        '-map', '[v]', '-map', '[a]',
+                        '-c:v', encoder, '-preset', str(preset),
+                        *( ['-tune', str(tune)] if tune else [] ),
+                        *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                        '-pix_fmt', 'yuv420p',
+                        '-c:a', 'aac',
+                        '-ar', '44100',
+                        '-ac', '2',
+                        '-b:a', '192k',
+                        '-threads', threads,
+                        '-movflags', 'faststart',
+                        final_path,
+                    ]
+                    subprocess.run(reenc_cmd, check=True)
+                except Exception:
+                    return
+        else:
+            try:
+                import shutil
+                shutil.copyfile(instrument_segment, final_path)
+            except Exception:
+                final_path = instrument_segment
+        try:
+            jobs[job_id]['instrument'] = final_path
+            rel_inst = os.path.relpath(final_path, OUTPUT_DIR).replace('\\', '/')
+            jobs[job_id]['instrument_url'] = f"/outputs/{rel_inst}"
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
     """Background thread function to process a job"""
     try:
@@ -674,6 +846,13 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 t.start()
         except Exception as e:
             print(f"Failed to start outro append thread: {e}")
+        try:
+            if instrumental_path and os.path.exists(instrumental_path):
+                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, session_dir, base_name))
+                t2.daemon = True
+                t2.start()
+        except Exception:
+            pass
         
     except Exception as e:
         # Update job status with error
@@ -843,6 +1022,10 @@ def get_job_status(job_id):
             response['vocals'] = job['vocals']
         if job.get('instrumental'):
             response['instrumental'] = job['instrumental']
+        if job.get('instrument'):
+            response['instrument'] = job['instrument']
+            rel_inst = os.path.relpath(job['instrument'], OUTPUT_DIR).replace("\\", "/")
+            response['instrument_url'] = f"/outputs/{rel_inst}"
         if job.get('stems_mix'):
             response['stems_mix'] = job['stems_mix']
         if job.get('qc'):
