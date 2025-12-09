@@ -374,7 +374,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             pass
 
 
-def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False):
+def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
     """Background thread function to process a job"""
     try:
         # Update job status
@@ -437,15 +437,15 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 if ext == '.lrc':
                     from backend.alignment_aeneas import lrc_to_alignment
                     src_for_align = vocals_path if (vocals_path and os.path.exists(vocals_path)) else wav_path
-                    outp = lrc_to_alignment(src_for_align, lyrics_path, alignment_path)
+                    outp = lrc_to_alignment(src_for_align, lyrics_path, alignment_path, language)
                     if outp:
                         alignment_path = outp
                     else:
                         src_for_align = vocals_path if (vocals_path and os.path.exists(vocals_path)) else wav_path
-                        align(src_for_align, lyrics_path, alignment_path)
+                        align(src_for_align, lyrics_path, alignment_path, language=language)
                 else:
                     src_for_align = vocals_path if (vocals_path and os.path.exists(vocals_path)) else wav_path
-                    align(src_for_align, lyrics_path, alignment_path)
+                    align(src_for_align, lyrics_path, alignment_path, language=language)
             jobs[job_id]["progress"] = 60
             jobs[job_id]["alignment"] = alignment_path
             rel_align = os.path.relpath(alignment_path, ALIGN_DIR).replace("\\", "/")
@@ -700,6 +700,7 @@ def generate_video():
     font_name = data.get('font')
     fontsize = data.get('fontsize')
     alignment_json = data.get('alignment_json')
+    language = data.get('language')
     pause_config = data.get('pause')
     sync_refine = data.get('sync_refine', False)
     
@@ -739,7 +740,7 @@ def generate_video():
         alignment_override = None
     sep_pref = data.get('separation_engine') or data.get('separation_prefer') or 'auto'
     out_fmt = (data.get('output_format') or 'mp4').lower()
-    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine))
+    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language))
     thread.daemon = True
     thread.start()
     

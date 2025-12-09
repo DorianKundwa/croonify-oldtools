@@ -39,12 +39,51 @@ except Exception:
 # Fallback alignment removed - Aeneas is now mandatory
 
 
-def _tokenize_line(line: str) -> List[str]:
-    """Split a lyric line into display tokens (words) conservatively.
-    Keeps punctuation attached to words; collapses whitespace.
-    """
-    # Split on whitespace and strip simple surrounding whitespace
-    tokens = [t for t in re.split(r"\s+", line.strip()) if t]
+def _normalize_language(lang: str) -> str:
+    m = {
+        "en": "eng", "eng": "eng",
+        "es": "spa", "spa": "spa",
+        "fr": "fra", "fra": "fra",
+        "de": "deu", "deu": "deu",
+        "pt": "por", "por": "por",
+        "it": "ita", "ita": "ita",
+        "nl": "nld", "nld": "nld",
+        "pl": "pol", "pol": "pol",
+        "sv": "swe", "swe": "swe",
+        "tr": "tur", "tur": "tur",
+        "ru": "rus", "rus": "rus",
+        "uk": "ukr", "ukr": "ukr",
+        "cs": "ces", "ces": "ces",
+        "el": "ell", "ell": "ell",
+        "ar": "ara", "ara": "ara",
+        "hi": "hin", "hin": "hin",
+        "vi": "vie", "vie": "vie",
+        "zh": "zho", "zho": "zho", "cmn": "zho",
+        "ja": "jpn", "jpn": "jpn",
+        "ko": "kor", "kor": "kor",
+        "th": "tha", "tha": "tha",
+    }
+    return m.get(str(lang or "").lower(), "eng")
+
+def _needs_char_tokenization(lang: str) -> bool:
+    l = _normalize_language(lang)
+    return l in ("zho", "jpn", "kor", "tha")
+
+def _tokenize_line(line: str, language: str = "eng") -> List[str]:
+    s = str(line or "").strip()
+    if not s:
+        return []
+    if _needs_char_tokenization(language):
+        chars = []
+        for ch in s:
+            if ch.isspace():
+                continue
+            if ch in ",.;:!?，。、「」『』（）()【】…—-、・":
+                chars.append(ch)
+            else:
+                chars.append(ch)
+        return chars
+    tokens = [t for t in re.split(r"\s+", s) if t]
     return tokens
 
 
@@ -65,11 +104,11 @@ def _build_words_text(lyrics_path: str) -> Tuple[str, List[List[str]]]:
     return tmp_path, per_line_tokens
 
 
-def _enrich_fragments_with_words_aeneas(audio_path: str, lyrics_path: str, fragments: List[dict]) -> List[dict]:
+def _enrich_fragments_with_words_aeneas(audio_path: str, lyrics_path: str, fragments: List[dict], language: str) -> List[dict]:
     try:
         with open(lyrics_path, "r", encoding="utf-8") as f:
             raw_lines = [ln.rstrip("\n") for ln in f.readlines()]
-        per_line_tokens = [_tokenize_line(ln) for ln in raw_lines]
+        per_line_tokens = [_tokenize_line(ln, language) for ln in raw_lines]
     except Exception:
         per_line_tokens = []
     for i, frag in enumerate(fragments):
@@ -78,7 +117,7 @@ def _enrich_fragments_with_words_aeneas(audio_path: str, lyrics_path: str, fragm
             end = float(frag.get("end", 0.0))
         except Exception:
             begin, end = 0.0, 0.0
-        tokens = per_line_tokens[i] if i < len(per_line_tokens) else _tokenize_line(" ".join(frag.get("lines", [])))
+        tokens = per_line_tokens[i] if i < len(per_line_tokens) else _tokenize_line(" ".join(frag.get("lines", [])), language)
         try:
             words = _distribute_words_by_audio(audio_path, int(begin * 1000), int(end * 1000), tokens)
         except Exception:
@@ -163,7 +202,7 @@ def _distribute_words_by_audio(audio_path: str, start_ms: int, end_ms: int, toke
 
 # Heuristic fallback builder (used only when Aeneas fails completely)
 
-def align(audio_path, lyrics_path, output_json=None):
+def align(audio_path, lyrics_path, output_json=None, language=None):
     """
     Align audio with lyrics using Aeneas (mandatory).
     If Aeneas alignment fails, an exception is raised.
@@ -186,8 +225,9 @@ def align(audio_path, lyrics_path, output_json=None):
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_json), exist_ok=True)
 
+    lang = _normalize_language(language)
     # Internal fallback: build naive alignment if Aeneas fails
-    def _build_fallback_fragments(audio_path_local: str, lyrics_path_local: str):
+    def _build_fallback_fragments(audio_path_local: str, lyrics_path_local: str, lang_local: str):
         try:
             from backend.audio_utils import get_duration  # lazy import
         except Exception:
@@ -230,13 +270,13 @@ def align(audio_path, lyrics_path, output_json=None):
                 "begin": f"{begin:.3f}",
                 "end": f"{end:.3f}",
                 "lines": [txt],
-                "language": "eng",
+                "language": lang_local,
                 "id": f"fb{i:06d}",
                 "children": []
             }
             # Approximate word timings using audio energy minima when possible
             try:
-                tokens = _tokenize_line(txt)
+                tokens = _tokenize_line(txt, lang_local)
                 words = _distribute_words_by_audio(audio_path_local, int(begin * 1000), int(end * 1000), tokens)
                 frag["words"] = words
             except Exception as _w_err:
@@ -264,7 +304,7 @@ def align(audio_path, lyrics_path, output_json=None):
 
         # Common Aeneas config: language, plain text, JSON output, boundary adjustments
         config_string = (
-            "task_language=eng|"
+            f"task_language={lang}|"
             "is_text_type=plain|"
             "os_task_file_format=json|"
             "task_adjust_boundary_algorithm=percent|"
@@ -311,7 +351,7 @@ def align(audio_path, lyrics_path, output_json=None):
         # If Aeneas failed entirely, build heuristic fallback
         if not ran_ok:
             print("Aeneas alignment failed; generating heuristic fallback alignment")
-            fallback_frags = _build_fallback_fragments(audio_path_abs, lyrics_path_abs)
+            fallback_frags = _build_fallback_fragments(audio_path_abs, lyrics_path_abs, lang)
             enriched_data = {"fragments": fallback_frags}
             with open(output_json_abs, "w", encoding="utf-8") as f:
                 json.dump(enriched_data, f, indent=2)
@@ -323,7 +363,7 @@ def align(audio_path, lyrics_path, output_json=None):
         fragments = data.get("fragments", [])
 
         # Enrich with per-word timings using second Aeneas run
-        enriched_fragments = _enrich_fragments_with_words_aeneas(audio_path_abs, lyrics_path_abs, fragments)
+        enriched_fragments = _enrich_fragments_with_words_aeneas(audio_path_abs, lyrics_path_abs, fragments, lang)
         enriched_data = {"fragments": enriched_fragments}
 
         with open(output_json_abs, "w", encoding="utf-8") as f:
@@ -335,7 +375,7 @@ def align(audio_path, lyrics_path, output_json=None):
         # If anything goes wrong, try fallback alignment instead of failing hard
         print(f"Aeneas alignment threw an exception: {e}. Using fallback alignment.")
         try:
-            fb = _build_fallback_fragments(audio_path, lyrics_path)
+            fb = _build_fallback_fragments(audio_path, lyrics_path, lang)
             with open(output_json, "w", encoding="utf-8") as f:
                 json.dump({"fragments": fb}, f, indent=2)
             return output_json
@@ -393,12 +433,13 @@ def _parse_lrc_timestamp(tag):
         pass
     return (None, None)
 
-def lrc_to_alignment(audio_path, lrc_path, output_json):
+def lrc_to_alignment(audio_path, lrc_path, output_json, language=None):
     try:
         with open(lrc_path, 'r', encoding='utf-8') as f:
             lines = [ln.rstrip('\n') for ln in f.readlines()]
     except Exception:
         return None
+    lang = _normalize_language(language)
     entries = []
     offset_ms = 0.0
     for ln in lines:
@@ -427,7 +468,7 @@ def lrc_to_alignment(audio_path, lrc_path, output_json):
         s = float(e['start'])
         n = entries[idx+1]['start'] if idx+1 < len(entries) else s + 1.5
         end = max(s, float(n))
-        toks = [t for t in e['text'].split()]
+        toks = _tokenize_line(e['text'], lang)
         words = []
         if toks:
             dur = max(0.0, end - s)
@@ -436,7 +477,7 @@ def lrc_to_alignment(audio_path, lrc_path, output_json):
                 ws = s + i*step
                 we = min(end, s + (i+1)*step)
                 words.append({'text': t, 'start': ws, 'end': we})
-        frags.append({'begin': f"{s:.3f}", 'end': f"{end:.3f}", 'lines': [e['text']], 'language': 'eng', 'id': f"lrc{idx:06d}", 'children': [], 'words': words})
+        frags.append({'begin': f"{s:.3f}", 'end': f"{end:.3f}", 'lines': [e['text']], 'language': lang, 'id': f"lrc{idx:06d}", 'children': [], 'words': words})
     try:
         with open(output_json, 'w', encoding='utf-8') as f:
             json.dump({'fragments': frags}, f, indent=2)

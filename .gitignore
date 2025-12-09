@@ -42,6 +42,9 @@ uploads/
 outputs/
 alignments/
 
+app.zip
+DEPLOYMENT.zip
+
 # Media artifacts
 *.wav
 *.mp3
