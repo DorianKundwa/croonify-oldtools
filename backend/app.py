@@ -542,6 +542,14 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
             jobs[job_id]['instrument_url'] = f"/outputs/{rel_inst}"
         except Exception:
             pass
+        try:
+            if 'instrument_segment' in locals() and instrument_segment and os.path.exists(instrument_segment):
+                if final_path != instrument_segment:
+                    os.remove(instrument_segment)
+            if 'outro_segment' in locals() and outro_segment and os.path.exists(outro_segment):
+                os.remove(outro_segment)
+        except Exception:
+            pass
     except Exception:
         pass
 
