@@ -39,7 +39,7 @@ try:
         detect_breaks_and_pauses,
     )
     from backend.alignment_aeneas import align
-    from backend.video_builder import build_lyric_video, generate_thumbnail_image
+    from backend.video_builder import build_lyric_video, generate_thumbnail_image, _find_font_path
 except Exception:
     from config import (
         UPLOAD_DIR,
@@ -71,7 +71,7 @@ except Exception:
         detect_breaks_and_pauses,
     )
     from alignment_aeneas import align
-    from video_builder import build_lyric_video, generate_thumbnail_image
+    from video_builder import build_lyric_video, generate_thumbnail_image, _find_font_path
 
 # Job management
 jobs = {}  # Dictionary to store job status: {job_id: {"status": "queued|running|done", "output": None}}
@@ -202,7 +202,7 @@ def upload_file():
         'background_path': background_path
     })
 
-def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None):
+def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None):
     """Post-processing: create an outro segment (image or solid color + outro audio)
     and append to the already-rendered base video using fast concat when possible.
     Updates jobs[job_id] with final_output and final_output_url upon completion.
@@ -244,12 +244,18 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             use_image = bool(bg_image_path and os.path.exists(bg_image_path))
         except Exception:
             use_image = False
-        font_path = r'C\\Windows\\Fonts\\arial.ttf'
+        _fp = None
         try:
-            _fp = font_path if os.path.exists(font_path) else None
+            _fp = _find_font_path(font_name) if font_name else None
         except Exception:
             _fp = None
-        font_expr = ("fontfile=" + _fp.replace("\\", "/")) if _fp else "font=Arial"
+        if not _fp:
+            fallback = r'C\\Windows\\Fonts\\arial.ttf'
+            try:
+                _fp = fallback if os.path.exists(fallback) else None
+            except Exception:
+                _fp = None
+        font_expr = ("fontfile=" + _fp.replace("\\", "/")) if _fp else (f"font={font_name}" if font_name else "font=Arial")
         dt = f"drawtext={font_expr}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize=72:box=1:boxcolor=black@0.35"
         if use_image:
             ffmpeg_cmd = [
@@ -382,7 +388,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             pass
 
 
-def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, session_dir=None, base_name=None):
+def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, session_dir=None, base_name=None, font_name=None):
     try:
         if not (instrumental_path and os.path.exists(instrumental_path) and session_dir and base_name):
             return
@@ -471,12 +477,18 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
             except Exception:
                 pass
             outro_segment = os.path.join(session_dir, f"{base_name}_instrument_outro.mp4")
-            font_path2 = r'C\\Windows\\Fonts\\arial.ttf'
+            _fp2 = None
             try:
-                _fp2 = font_path2 if os.path.exists(font_path2) else None
+                _fp2 = _find_font_path(font_name) if font_name else None
             except Exception:
                 _fp2 = None
-            font_expr2 = ("fontfile=" + _fp2.replace("\\", "/")) if _fp2 else "font=Arial"
+            if not _fp2:
+                fallback2 = r'C\\Windows\\Fonts\\arial.ttf'
+                try:
+                    _fp2 = fallback2 if os.path.exists(fallback2) else None
+                except Exception:
+                    _fp2 = None
+            font_expr2 = ("fontfile=" + _fp2.replace("\\", "/")) if _fp2 else (f"font={font_name}" if font_name else "font=Arial")
             dt2 = f"drawtext={font_expr2}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize=72:box=1:boxcolor=black@0.35"
             if use_image:
                 outro_cmd = [
@@ -865,14 +877,14 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         try:
             jobs[job_id]["postprocess"] = "appending_outro" if outro_path else None
             if outro_path:
-                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path))
+                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name))
                 t.daemon = True
                 t.start()
         except Exception as e:
             print(f"Failed to start outro append thread: {e}")
         try:
             if instrumental_path and os.path.exists(instrumental_path):
-                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, session_dir, base_name))
+                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, session_dir, base_name, font_name))
                 t2.daemon = True
                 t2.start()
         except Exception:
