@@ -244,12 +244,19 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             use_image = bool(bg_image_path and os.path.exists(bg_image_path))
         except Exception:
             use_image = False
+        font_path = r'C\\Windows\\Fonts\\arial.ttf'
+        try:
+            _fp = font_path if os.path.exists(font_path) else None
+        except Exception:
+            _fp = None
+        font_expr = ("fontfile=" + _fp.replace("\\", "/")) if _fp else "font=Arial"
+        dt = f"drawtext={font_expr}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize=72:box=1:boxcolor=black@0.35"
         if use_image:
             ffmpeg_cmd = [
                 FFMPEG_PATH, '-y',
                 '-loop', '1', '-i', bg_image_path,
                 '-i', outro_wav,
-                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,{dt}",
                 '-c:v', encoder, '-preset', str(preset),
                 *( ['-tune', str(tune)] if tune else [] ),
                 *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
@@ -276,6 +283,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
                 FFMPEG_PATH, '-y',
                 '-f', 'lavfi', '-i', color_src,
                 '-i', outro_wav,
+                '-vf', dt,
                 '-c:v', encoder, '-preset', str(preset),
                 *( ['-tune', str(tune)] if tune else [] ),
                 *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
@@ -463,12 +471,19 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
             except Exception:
                 pass
             outro_segment = os.path.join(session_dir, f"{base_name}_instrument_outro.mp4")
+            font_path2 = r'C\\Windows\\Fonts\\arial.ttf'
+            try:
+                _fp2 = font_path2 if os.path.exists(font_path2) else None
+            except Exception:
+                _fp2 = None
+            font_expr2 = ("fontfile=" + _fp2.replace("\\", "/")) if _fp2 else "font=Arial"
+            dt2 = f"drawtext={font_expr2}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize=72:box=1:boxcolor=black@0.35"
             if use_image:
                 outro_cmd = [
                     FFMPEG_PATH, '-y',
                     '-loop', '1', '-i', bg_image_path,
                     '-i', outro_wav,
-                    '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                    '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,{dt2}",
                     '-c:v', encoder, '-preset', str(preset),
                     *( ['-tune', str(tune)] if tune else [] ),
                     *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
@@ -489,6 +504,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                     FFMPEG_PATH, '-y',
                     '-f', 'lavfi', '-i', color_src2,
                     '-i', outro_wav,
+                    '-vf', dt2,
                     '-c:v', encoder, '-preset', str(preset),
                     *( ['-tune', str(tune)] if tune else [] ),
                     *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
