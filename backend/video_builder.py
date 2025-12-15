@@ -21,6 +21,15 @@ try:
         FFMPEG_ENCODER,
         FFMPEG_CRF,
         FONTS_DIR,
+        OUTRO_ENABLED,
+        OUTRO_MESSAGE_TEXT,
+        OUTRO_FADE_IN_SEC,
+        OUTRO_FADE_OUT_SEC,
+        OUTRO_POSITION,
+        OUTRO_FONT_COLOR,
+        OUTRO_BOX_COLOR,
+        OUTRO_BOX_OPACITY,
+        OUTRO_OVERLAY_LAST_SECONDS,
     )
     from backend.audio_utils import detect_tail_silence
 except Exception:
@@ -33,6 +42,15 @@ except Exception:
         FFMPEG_ENCODER,
         FFMPEG_CRF,
         FONTS_DIR,
+        OUTRO_ENABLED,
+        OUTRO_MESSAGE_TEXT,
+        OUTRO_FADE_IN_SEC,
+        OUTRO_FADE_OUT_SEC,
+        OUTRO_POSITION,
+        OUTRO_FONT_COLOR,
+        OUTRO_BOX_COLOR,
+        OUTRO_BOX_OPACITY,
+        OUTRO_OVERLAY_LAST_SECONDS,
     )
     from audio_utils import detect_tail_silence
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -749,15 +767,42 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
                 ffparams += ['-tune', str(FFMPEG_TUNE)]
         except Exception:
             pass
-        # Prefer CRF if explicitly configured; otherwise keep a reasonable bitrate
+        # Prefer CRF; default to 20 if not configured to maintain consistent quality
         bitrate_arg = None
         if FFMPEG_CRF:
             ffparams += ['-crf', str(FFMPEG_CRF)]
         else:
-            bitrate_arg = '3000k'
+            ffparams += ['-crf', '20']
         # Let ffmpeg use all logical cores when threads=0
         if selected_threads is not None:
             ffparams += ['-threads', str(selected_threads)]
+        try:
+            apply_overlay = (not outro_audio_path) and str(OUTRO_ENABLED).strip() in ("1", "true", "True")
+            if apply_overlay and hasattr(final_video, "duration"):
+                dur = float(final_video.duration or 0.0)
+                last_sec = float(OUTRO_OVERLAY_LAST_SECONDS or 8.0)
+                start_t = max(0.0, dur - last_sec)
+                fi = float(OUTRO_FADE_IN_SEC or 0.6)
+                fo = float(OUTRO_FADE_OUT_SEC or 0.6)
+                boxc = f"{OUTRO_BOX_COLOR}@{OUTRO_BOX_OPACITY}" if OUTRO_BOX_COLOR else "black@0.35"
+                fs = int(fontsize or DEFAULT_FONTSIZE)
+                fs = max(24, min(144, int(fs)))
+                fp = _find_font_path(font_name) if font_name else None
+                font_expr = ("fontfile=" + fp.replace("\\", "/")) if fp else (f"font={font_name}" if font_name else "font=Arial")
+                pos_y = "(h-text_h)/2"
+                if str(OUTRO_POSITION).lower() == "lower_third":
+                    pos_y = "h-text_h-50"
+                alpha_expr = None
+                if dur > 0.0 and (fi > 0.0 or fo > 0.0):
+                    alpha_expr = f"if(lt(t,{start_t+fi}),(t-{start_t})/{fi},if(lt(t,{dur-fo}),1,max(0,({dur}-t)/{fo})))"
+                dt = (
+                    f"drawtext={font_expr}:text='{OUTRO_MESSAGE_TEXT}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={fs}:box=1:boxcolor={boxc}"
+                    + (f":alpha='{alpha_expr}'" if alpha_expr else "")
+                    + f":enable='gte(t,{start_t})'"
+                )
+                ffparams = ['-vf', dt] + ffparams
+        except Exception:
+            pass
 
         try:
             print(f"Video builder: assembling {len(text_clips)} clips; audio={audio_clip.duration:.3f}s")
@@ -787,8 +832,8 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
                     fps=DEFAULT_FPS,
                     audio_codec='aac',
                     codec='libx264',
-                    bitrate=bitrate_arg or '3000k',
-                    ffmpeg_params=['-preset', 'ultrafast', '-movflags', 'faststart', '-pix_fmt', 'yuv420p', '-threads', '0'],
+                    bitrate=None,
+                    ffmpeg_params=['-preset', str(selected_preset or 'medium'), '-crf', str(FFMPEG_CRF or 20), '-movflags', 'faststart', '-pix_fmt', 'yuv420p', '-threads', '0'],
                 )
             except Exception as e_fallback:
                 try:

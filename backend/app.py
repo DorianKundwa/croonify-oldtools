@@ -20,10 +20,19 @@ try:
         FFMPEG_TUNE,
         FFMPEG_ENCODER,
         FFMPEG_CRF,
+        OUTRO_ENABLED,
+        OUTRO_MESSAGE_TEXT,
+        OUTRO_FADE_IN_SEC,
+        OUTRO_FADE_OUT_SEC,
+        OUTRO_POSITION,
+        OUTRO_FONT_COLOR,
+        OUTRO_BOX_COLOR,
+        OUTRO_BOX_OPACITY,
     )
     from backend.audio_utils import (
         convert_to_wav,
         normalize_audio,
+        get_duration,
         detect_vocal_onset,
         classify_vocal_segments,
         detect_main_vocal_onset_from_alignment,
@@ -52,10 +61,19 @@ except Exception:
         FFMPEG_TUNE,
         FFMPEG_ENCODER,
         FFMPEG_CRF,
+        OUTRO_ENABLED,
+        OUTRO_MESSAGE_TEXT,
+        OUTRO_FADE_IN_SEC,
+        OUTRO_FADE_OUT_SEC,
+        OUTRO_POSITION,
+        OUTRO_FONT_COLOR,
+        OUTRO_BOX_COLOR,
+        OUTRO_BOX_OPACITY,
     )
     from audio_utils import (
         convert_to_wav,
         normalize_audio,
+        get_duration,
         detect_vocal_onset,
         classify_vocal_segments,
         detect_main_vocal_onset_from_alignment,
@@ -234,7 +252,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
         height = 1080
         fps = 24
         encoder = FFMPEG_ENCODER or 'libx264'
-        preset = FFMPEG_PRESET or 'ultrafast'
+        preset = FFMPEG_PRESET or 'medium'
         threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
         tune = FFMPEG_TUNE
         crf = FFMPEG_CRF
@@ -261,16 +279,39 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
         except Exception:
             out_fs = 72
         out_fs = max(24, min(144, out_fs))
-        dt = f"drawtext={font_expr}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize={out_fs}:box=1:boxcolor=black@0.35"
+        out_dur = 0.0
+        try:
+            out_dur = float(get_duration(outro_wav) or 0.0)
+        except Exception:
+            out_dur = 0.0
+        pos_y = "(h-text_h)/2"
+        try:
+            if str(OUTRO_POSITION).lower() == "lower_third":
+                pos_y = "h-text_h-50"
+        except Exception:
+            pos_y = "(h-text_h)/2"
+        boxc = f"{OUTRO_BOX_COLOR}@{OUTRO_BOX_OPACITY}" if OUTRO_BOX_COLOR else "black@0.35"
+        fi = float(OUTRO_FADE_IN_SEC) if OUTRO_FADE_IN_SEC else 0.6
+        fo = float(OUTRO_FADE_OUT_SEC) if OUTRO_FADE_OUT_SEC else 0.6
+        alpha_expr = None
+        try:
+            if out_dur > 0.0 and (fi > 0.0 or fo > 0.0):
+                alpha_expr = f"if(lt(t,{fi}),t/{fi},if(lt(t,{max(0.0,out_dur-fo)}),1,max(0,({out_dur}-t)/{fo})))"
+        except Exception:
+            alpha_expr = None
+        dt = (
+            f"drawtext={font_expr}:text='{OUTRO_MESSAGE_TEXT}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs}:box=1:boxcolor={boxc}"
+            + (f":alpha='{alpha_expr}'" if alpha_expr else "")
+        )
         if use_image:
             ffmpeg_cmd = [
                 FFMPEG_PATH, '-y',
                 '-loop', '1', '-i', bg_image_path,
                 '-i', outro_wav,
-                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,{dt}",
+                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},setsar=1,{dt}",
                 '-c:v', encoder, '-preset', str(preset),
                 *( ['-tune', str(tune)] if tune else [] ),
-                *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                *( ['-crf', str(crf if crf else 20)] ),
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 '-ar', '44100',
@@ -297,7 +338,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
                 '-vf', dt,
                 '-c:v', encoder, '-preset', str(preset),
                 *( ['-tune', str(tune)] if tune else [] ),
-                *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                *( ['-crf', str(crf if crf else 20)] ),
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 '-ar', '44100',
@@ -343,7 +384,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
                     '-map', '[v]', '-map', '[a]',
                     '-c:v', encoder, '-preset', str(preset),
                     *( ['-tune', str(tune)] if tune else [] ),
-                    *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                    *( ['-crf', str(crf if crf else 20)] ),
                     '-pix_fmt', 'yuv420p',
                     '-c:a', 'aac',
                     '-ar', '44100',
@@ -412,7 +453,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
         height = 1080
         fps = 24
         encoder = FFMPEG_ENCODER or 'libx264'
-        preset = FFMPEG_PRESET or 'ultrafast'
+        preset = FFMPEG_PRESET or 'medium'
         threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
         tune = FFMPEG_TUNE
         crf = FFMPEG_CRF
@@ -428,10 +469,10 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                 FFMPEG_PATH, '-y',
                 '-loop', '1', '-i', bg_image_path,
                 '-i', inst_wav,
-                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+                '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},setsar=1",
                 '-c:v', encoder, '-preset', str(preset),
                 *( ['-tune', str(tune)] if tune else [] ),
-                *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                *( ['-crf', str(crf if crf else 20)] ),
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 '-ar', '44100',
@@ -457,7 +498,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                 '-i', inst_wav,
                 '-c:v', encoder, '-preset', str(preset),
                 *( ['-tune', str(tune)] if tune else [] ),
-                *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                *( ['-crf', str(crf if crf else 20)] ),
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 '-ar', '44100',
@@ -499,16 +540,39 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
             except Exception:
                 out_fs2 = 72
             out_fs2 = max(24, min(144, out_fs2))
-            dt2 = f"drawtext={font_expr2}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize={out_fs2}:box=1:boxcolor=black@0.35"
+            out_dur2 = 0.0
+            try:
+                out_dur2 = float(get_duration(outro_wav) or 0.0)
+            except Exception:
+                out_dur2 = 0.0
+            pos_y2 = "(h-text_h)/2"
+            try:
+                if str(OUTRO_POSITION).lower() == "lower_third":
+                    pos_y2 = "h-text_h-50"
+            except Exception:
+                pos_y2 = "(h-text_h)/2"
+            boxc2 = f"{OUTRO_BOX_COLOR}@{OUTRO_BOX_OPACITY}" if OUTRO_BOX_COLOR else "black@0.35"
+            fi2 = float(OUTRO_FADE_IN_SEC) if OUTRO_FADE_IN_SEC else 0.6
+            fo2 = float(OUTRO_FADE_OUT_SEC) if OUTRO_FADE_OUT_SEC else 0.6
+            alpha_expr2 = None
+            try:
+                if out_dur2 > 0.0 and (fi2 > 0.0 or fo2 > 0.0):
+                    alpha_expr2 = f"if(lt(t,{fi2}),t/{fi2},if(lt(t,{max(0.0,out_dur2-fo2)}),1,max(0,({out_dur2}-t)/{fo2})))"
+            except Exception:
+                alpha_expr2 = None
+            dt2 = (
+                f"drawtext={font_expr2}:text='{OUTRO_MESSAGE_TEXT}':x=(w-text_w)/2:y={pos_y2}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs2}:box=1:boxcolor={boxc2}"
+                + (f":alpha='{alpha_expr2}'" if alpha_expr2 else "")
+            )
             if use_image:
                 outro_cmd = [
                     FFMPEG_PATH, '-y',
                     '-loop', '1', '-i', bg_image_path,
                     '-i', outro_wav,
-                    '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,{dt2}",
+                    '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},setsar=1,{dt2}",
                     '-c:v', encoder, '-preset', str(preset),
                     *( ['-tune', str(tune)] if tune else [] ),
-                    *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                    *( ['-crf', str(crf if crf else 20)] ),
                     '-pix_fmt', 'yuv420p',
                     '-c:a', 'aac',
                     '-ar', '44100',
@@ -529,7 +593,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                     '-vf', dt2,
                     '-c:v', encoder, '-preset', str(preset),
                     *( ['-tune', str(tune)] if tune else [] ),
-                    *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                    *( ['-crf', str(crf if crf else 20)] ),
                     '-pix_fmt', 'yuv420p',
                     '-c:a', 'aac',
                     '-ar', '44100',
@@ -555,7 +619,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                         '-map', '[v]', '-map', '[a]',
                         '-c:v', encoder, '-preset', str(preset),
                         *( ['-tune', str(tune)] if tune else [] ),
-                        *( ['-crf', str(crf)] if crf else ['-b:v', '3000k'] ),
+                        *( ['-crf', str(crf if crf else 20)] ),
                         '-pix_fmt', 'yuv420p',
                         '-c:a', 'aac',
                         '-ar', '44100',
