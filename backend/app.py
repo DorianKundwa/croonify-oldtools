@@ -202,7 +202,7 @@ def upload_file():
         'background_path': background_path
     })
 
-def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None):
+def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None, font_size=None):
     """Post-processing: create an outro segment (image or solid color + outro audio)
     and append to the already-rendered base video using fast concat when possible.
     Updates jobs[job_id] with final_output and final_output_url upon completion.
@@ -256,7 +256,12 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             except Exception:
                 _fp = None
         font_expr = ("fontfile=" + _fp.replace("\\", "/")) if _fp else (f"font={font_name}" if font_name else "font=Arial")
-        dt = f"drawtext={font_expr}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize=72:box=1:boxcolor=black@0.35"
+        try:
+            out_fs = int(font_size) if font_size else 72
+        except Exception:
+            out_fs = 72
+        out_fs = max(24, min(144, out_fs))
+        dt = f"drawtext={font_expr}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize={out_fs}:box=1:boxcolor=black@0.35"
         if use_image:
             ffmpeg_cmd = [
                 FFMPEG_PATH, '-y',
@@ -388,7 +393,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             pass
 
 
-def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, session_dir=None, base_name=None, font_name=None):
+def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, session_dir=None, base_name=None, font_name=None, font_size=None):
     try:
         if not (instrumental_path and os.path.exists(instrumental_path) and session_dir and base_name):
             return
@@ -489,7 +494,12 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                 except Exception:
                     _fp2 = None
             font_expr2 = ("fontfile=" + _fp2.replace("\\", "/")) if _fp2 else (f"font={font_name}" if font_name else "font=Arial")
-            dt2 = f"drawtext={font_expr2}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize=72:box=1:boxcolor=black@0.35"
+            try:
+                out_fs2 = int(font_size) if font_size else 72
+            except Exception:
+                out_fs2 = 72
+            out_fs2 = max(24, min(144, out_fs2))
+            dt2 = f"drawtext={font_expr2}:text='Thanks for watching':x=(w-text_w)/2:y=(h-text_h)/2:fontcolor=white:fontsize={out_fs2}:box=1:boxcolor=black@0.35"
             if use_image:
                 outro_cmd = [
                     FFMPEG_PATH, '-y',
@@ -877,14 +887,14 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         try:
             jobs[job_id]["postprocess"] = "appending_outro" if outro_path else None
             if outro_path:
-                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name))
+                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70))
                 t.daemon = True
                 t.start()
         except Exception as e:
             print(f"Failed to start outro append thread: {e}")
         try:
             if instrumental_path and os.path.exists(instrumental_path):
-                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, session_dir, base_name, font_name))
+                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, session_dir, base_name, font_name, fontsize or 70))
                 t2.daemon = True
                 t2.start()
         except Exception:
