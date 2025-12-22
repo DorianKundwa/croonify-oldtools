@@ -16,13 +16,13 @@ FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "ffmpeg")  # If not in PATH, set FFM
 # threads=0 lets ffmpeg auto-select the maximum number of threads (i.e., all cores)
 FFMPEG_THREADS = int(os.environ.get("FFMPEG_THREADS", "0"))
 # preset controls encoder speed/complexity; 'ultrafast' maximizes speed at the cost of compression efficiency
-FFMPEG_PRESET = os.environ.get("FFMPEG_PRESET", "medium")
+FFMPEG_PRESET = os.environ.get("FFMPEG_PRESET", "ultrafast")
 # tune can further optimize for speed/latency; 'zerolatency' removes lookahead and reduces buffering
-FFMPEG_TUNE = os.environ.get("FFMPEG_TUNE", "zerolatency")
+FFMPEG_TUNE = os.environ.get("FFMPEG_TUNE", "")
 # encoder can be 'libx264' (CPU) or 'h264_nvenc' (NVIDIA GPU), etc.
 FFMPEG_ENCODER = os.environ.get("FFMPEG_ENCODER", "libx264")
 # Optional quality target. If set, we will prefer CRF over bitrate in video builder.
-FFMPEG_CRF = os.environ.get("FFMPEG_CRF")
+FFMPEG_CRF = os.environ.get("FFMPEG_CRF", "16")
 
 # Outro overlay configuration (customizable via environment variables)
 OUTRO_ENABLED = os.environ.get("OUTRO_ENABLED", "1")  # '1' to enable by default
