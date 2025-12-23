@@ -610,28 +610,43 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
             except Exception:
                 outro_segment = None
             if outro_segment and os.path.exists(outro_segment):
+                filelist_path = os.path.join(session_dir, f"{base_name}_instrument_concat.txt")
                 try:
-                    reenc_cmd = [
+                    inst_norm = instrument_segment.replace("\\", "/")
+                    outro_norm = outro_segment.replace("\\", "/")
+                    with open(filelist_path, 'w', encoding='utf-8') as f:
+                        f.write(f"file '{inst_norm}'\n")
+                        f.write(f"file '{outro_norm}'\n")
+                    concat_cmd = [
                         FFMPEG_PATH, '-y',
-                        '-i', instrument_segment,
-                        '-i', outro_segment,
-                        '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]',
-                        '-map', '[v]', '-map', '[a]',
-                        '-c:v', encoder, '-preset', str(preset),
-                        *( ['-tune', str(tune)] if tune else [] ),
-                        *( ['-crf', str(crf if crf else 20)] ),
-                        '-pix_fmt', 'yuv420p',
-                        '-c:a', 'aac',
-                        '-ar', '44100',
-                        '-ac', '2',
-                        '-b:a', '192k',
-                        '-threads', threads,
-                        '-movflags', 'faststart',
+                        '-f', 'concat', '-safe', '0', '-i', filelist_path,
+                        '-c', 'copy', '-movflags', 'faststart',
                         final_path,
                     ]
-                    subprocess.run(reenc_cmd, check=True)
+                    subprocess.run(concat_cmd, check=True)
                 except Exception:
-                    return
+                    try:
+                        reenc_cmd = [
+                            FFMPEG_PATH, '-y',
+                            '-i', instrument_segment,
+                            '-i', outro_segment,
+                            '-filter_complex', '[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]',
+                            '-map', '[v]', '-map', '[a]',
+                            '-c:v', encoder, '-preset', str(preset),
+                            *( ['-tune', str(tune)] if tune else [] ),
+                            *( ['-crf', str(crf if crf else 20)] ),
+                            '-pix_fmt', 'yuv420p',
+                            '-c:a', 'aac',
+                            '-ar', '44100',
+                            '-ac', '2',
+                            '-b:a', '192k',
+                            '-threads', threads,
+                            '-movflags', 'faststart',
+                            final_path,
+                        ]
+                        subprocess.run(reenc_cmd, check=True)
+                    except Exception:
+                        return
         else:
             try:
                 import shutil
@@ -650,6 +665,8 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                     os.remove(instrument_segment)
             if 'outro_segment' in locals() and outro_segment and os.path.exists(outro_segment):
                 os.remove(outro_segment)
+            if 'filelist_path' in locals() and filelist_path and os.path.exists(filelist_path):
+                os.remove(filelist_path)
         except Exception:
             pass
     except Exception:
