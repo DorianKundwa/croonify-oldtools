@@ -162,7 +162,7 @@ def upload_file():
     
     # Check audio file extension
     audio_ext = os.path.splitext(audio_file.filename)[1].lower()
-    allowed_exts = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.opus']
+    allowed_exts = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.mov', '.opus']
     if audio_ext not in allowed_exts:
         return jsonify({'error': 'Audio file must be one of: MP3, WAV, M4A, AAC, FLAC, OGG, WMA, AIFF, MP4, WEBM, OPUS'}), 400
     
@@ -175,7 +175,7 @@ def upload_file():
     # If outro audio provided, check extension
     if outro_file and outro_file.filename:
         outro_ext = os.path.splitext(outro_file.filename)[1].lower()
-        allowed_exts = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.opus']
+        allowed_exts = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.mov', '.opus']
         if outro_ext not in allowed_exts:
             return jsonify({'error': 'Outro audio must be one of: MP3, WAV, M4A, AAC, FLAC, OGG, WMA, AIFF, MP4, WEBM, OPUS'}), 400
     
@@ -434,7 +434,90 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             pass
 
 
-def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, session_dir=None, base_name=None, font_name=None, font_size=None):
+def _append_outro_video_async(job_id, base_video_path, outro_video_path):
+    try:
+        if not (outro_video_path and os.path.exists(outro_video_path) and base_video_path and os.path.exists(base_video_path)):
+            return
+        base_name = os.path.splitext(os.path.basename(base_video_path))[0]
+        session_dir = os.path.dirname(base_video_path)
+        final_path = os.path.join(session_dir, f"{base_name}_final.mp4")
+        filelist_path = os.path.join(session_dir, f"{base_name}_concat.txt")
+        try:
+            bv_norm = base_video_path.replace("\\", "/")
+            ov_norm = outro_video_path.replace("\\", "/")
+            with open(filelist_path, 'w', encoding='utf-8') as f:
+                f.write(f"file '{bv_norm}'\n")
+                f.write(f"file '{ov_norm}'\n")
+            concat_cmd = [
+                FFMPEG_PATH, '-y',
+                '-f', 'concat', '-safe', '0', '-i', filelist_path,
+                '-c', 'copy', '-movflags', 'faststart',
+                final_path,
+            ]
+            subprocess.run(concat_cmd, check=True)
+        except Exception as e:
+            print(f"Stream-copy concat failed, attempting re-encode: {e}")
+            encoder = FFMPEG_ENCODER or 'libx264'
+            preset = FFMPEG_PRESET or 'medium'
+            threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
+            tune = FFMPEG_TUNE
+            crf = FFMPEG_CRF
+            fc = (
+                "[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v0];"
+                "[1:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v1];"
+                "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
+                "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
+                "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+            )
+            reenc_cmd = [
+                FFMPEG_PATH, '-y',
+                '-i', base_video_path,
+                '-i', outro_video_path,
+                '-filter_complex', fc,
+                '-map', '[v]', '-map', '[a]',
+                '-c:v', encoder, '-preset', str(preset),
+                *( ['-tune', str(tune)] if tune else [] ),
+                *( ['-crf', str(crf if crf else 20)] ),
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-ar', '44100',
+                '-ac', '2',
+                '-b:a', '192k',
+                '-threads', threads,
+                '-movflags', 'faststart',
+                final_path,
+            ]
+            try:
+                subprocess.run(reenc_cmd, check=True)
+            except Exception as e2:
+                print(f"Re-encode concat failed: {e2}")
+                return
+        try:
+            jobs[job_id]["final_output"] = final_path
+            rel_final = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
+            jobs[job_id]["final_output_url"] = f"/outputs/{rel_final}"
+            jobs[job_id]["stage"] = "Completed (outro appended)"
+        except Exception:
+            pass
+        try:
+            for p in [base_video_path, filelist_path]:
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception as de:
+                    print(f"Cleanup warning: failed to delete {p}: {de}")
+            try:
+                jobs[job_id]["output"] = None
+                jobs[job_id]["output_url"] = None
+            except Exception:
+                pass
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
+def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, outro_is_video=False, session_dir=None, base_name=None, font_name=None, font_size=None):
     try:
         if not (instrumental_path and os.path.exists(instrumental_path) and session_dir and base_name):
             return
@@ -514,7 +597,53 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
             subprocess.run(ffmpeg_cmd, check=True)
         except Exception:
             return
-        if outro_path and os.path.exists(outro_path):
+        if outro_path and os.path.exists(outro_path) and bool(outro_is_video):
+            outro_video_path = outro_path
+            filelist_path = os.path.join(session_dir, f"{base_name}_instrument_concat.txt")
+            try:
+                inst_norm = instrument_segment.replace("\\", "/")
+                outro_norm = outro_video_path.replace("\\", "/")
+                with open(filelist_path, 'w', encoding='utf-8') as f:
+                    f.write(f"file '{inst_norm}'\n")
+                    f.write(f"file '{outro_norm}'\n")
+                concat_cmd = [
+                    FFMPEG_PATH, '-y',
+                    '-f', 'concat', '-safe', '0', '-i', filelist_path,
+                    '-c', 'copy', '-movflags', 'faststart',
+                    final_path,
+                ]
+                subprocess.run(concat_cmd, check=True)
+            except Exception:
+                try:
+                    fc = (
+                        "[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v0];"
+                        "[1:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v1];"
+                        "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
+                        "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
+                        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+                    )
+                    reenc_cmd = [
+                        FFMPEG_PATH, '-y',
+                        '-i', instrument_segment,
+                        '-i', outro_video_path,
+                        '-filter_complex', fc,
+                        '-map', '[v]', '-map', '[a]',
+                        '-c:v', encoder, '-preset', str(preset),
+                        *( ['-tune', str(tune)] if tune else [] ),
+                        *( ['-crf', str(crf if crf else 20)] ),
+                        '-pix_fmt', 'yuv420p',
+                        '-c:a', 'aac',
+                        '-ar', '44100',
+                        '-ac', '2',
+                        '-b:a', '192k',
+                        '-threads', threads,
+                        '-movflags', 'faststart',
+                        final_path,
+                    ]
+                    subprocess.run(reenc_cmd, check=True)
+                except Exception:
+                    return
+        elif outro_path and os.path.exists(outro_path):
             outro_base = os.path.splitext(os.path.basename(outro_path))[0]
             outro_wav = os.path.join(UPLOAD_DIR, f"{outro_base}.wav")
             try:
@@ -673,7 +802,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
         pass
 
 
-def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
+def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
     """Background thread function to process a job"""
     try:
         # Update job status
@@ -967,7 +1096,11 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         # Kick off post-processing to append outro without blocking main completion
         try:
             jobs[job_id]["postprocess"] = "appending_outro" if outro_path else None
-            if outro_path:
+            if outro_path and bool(outro_is_video):
+                t = threading.Thread(target=_append_outro_video_async, args=(job_id, output_path, outro_path))
+                t.daemon = True
+                t.start()
+            elif outro_path:
                 t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70))
                 t.daemon = True
                 t.start()
@@ -975,7 +1108,7 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             print(f"Failed to start outro append thread: {e}")
         try:
             if instrumental_path and os.path.exists(instrumental_path):
-                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, session_dir, base_name, font_name, fontsize or 70))
+                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, bool(outro_is_video), session_dir, base_name, font_name, fontsize or 70))
                 t2.daemon = True
                 t2.start()
         except Exception:
@@ -1011,6 +1144,7 @@ def generate_video():
     sync_refine = data.get('sync_refine', False)
     
     outro_path = data.get('outro_path')
+    outro_is_video = bool(data.get('outro_is_video'))
     song_title = data.get('song_title')
     artist_name = data.get('artist_name')
     
@@ -1046,7 +1180,7 @@ def generate_video():
         alignment_override = None
     sep_pref = data.get('separation_engine') or data.get('separation_prefer') or 'auto'
     out_fmt = (data.get('output_format') or 'mp4').lower()
-    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language))
+    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, outro_is_video, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language))
     thread.daemon = True
     thread.start()
     

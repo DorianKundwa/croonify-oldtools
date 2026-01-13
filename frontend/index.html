@@ -180,9 +180,12 @@
         </div>
 
         <div class="form-group">
-            <label for="outroFile">Upload Outro Audio (optional):</label>
-            <input type="file" id="outroFile" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.aiff,.aif,.mp4,.webm">
-            <div class="hint">If provided, the outro audio plays after the lyric section without on-screen lyrics.</div>
+            <label for="outroFile">Upload Outro (optional):</label>
+            <div style="margin-bottom:8px;">
+                <label style="font-weight:500;"><input type="checkbox" id="outroIsVideo"> Use outro video (instead of audio)</label>
+            </div>
+            <input type="file" id="outroFile" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.aiff,.aif,.mp4,.webm,.mov">
+            <div class="hint" id="outroHint">If provided, the outro audio plays after the lyric section without on-screen lyrics.</div>
         </div>
         
         <div class="form-group">
@@ -276,6 +279,8 @@
         document.addEventListener('DOMContentLoaded', function() {
             const audioFileInput = document.getElementById('audioFile');
             const outroFileInput = document.getElementById('outroFile');
+            const outroIsVideoToggle = document.getElementById('outroIsVideo');
+            const outroHint = document.getElementById('outroHint');
             const lyricsFileInput = document.getElementById('lyricsFile');
             const lyricsText = document.getElementById('lyricsText');
             const generateBtn = document.getElementById('generateBtn');
@@ -310,6 +315,7 @@
                 audio: null,
                 lyrics: null,
                 outro: null,
+                outro_is_video: false,
                 background: null
             };
 
@@ -318,6 +324,20 @@
             function currentBgType() {
                 return bgTypeImage.checked ? 'image' : 'color';
             }
+
+            function updateOutroHint() {
+                const isVideo = !!(outroIsVideoToggle && outroIsVideoToggle.checked);
+                if (outroHint) {
+                    outroHint.textContent = isVideo
+                        ? 'If provided, the outro video is appended after the lyric section (and also used for the instrumental outro).'
+                        : 'If provided, the outro audio plays after the lyric section without on-screen lyrics.';
+                }
+            }
+
+            if (outroIsVideoToggle) {
+                outroIsVideoToggle.addEventListener('change', updateOutroHint);
+            }
+            updateOutroHint();
 
             function updateBgVisibility() {
                 const t = currentBgType();
@@ -416,14 +436,31 @@
                     formData.append('background', imgFile);
                 }
 
-                // Optional outro audio
                 if (outroFileInput.files.length > 0) {
                     const outroFile = outroFileInput.files[0];
-                    if (outroFile.size > 100 * 1024 * 1024) { // 100MB max for outro
-                        alert('Outro audio file is too large. Maximum size is 100MB.');
+                    if (outroFile.size > 100 * 1024 * 1024) {
+                        alert('Outro file is too large. Maximum size is 100MB.');
                         return false;
                     }
+                    const isVideo = !!(outroIsVideoToggle && outroIsVideoToggle.checked);
+                    const ext = (outroFile.name.split('.').pop() || '').toLowerCase();
+                    const audioExts = new Set(['mp3','wav','m4a','aac','flac','ogg','opus','wma','aiff','aif']);
+                    const videoExts = new Set(['mp4','webm','mov']);
+                    if (isVideo) {
+                        if (!videoExts.has(ext)) {
+                            alert('Outro video must be MP4, WEBM, or MOV.');
+                            return false;
+                        }
+                    } else {
+                        if (!(audioExts.has(ext) || videoExts.has(ext))) {
+                            alert('Outro audio must be a supported audio format (or MP4/WEBM/MOV with an audio track).');
+                            return false;
+                        }
+                    }
                     formData.append('outro', outroFile);
+                    uploadedFiles.outro_is_video = isVideo;
+                } else {
+                    uploadedFiles.outro_is_video = false;
                 }
                 
                 try {
@@ -510,6 +547,7 @@
                             }
                             if (uploadedFiles.outro) {
                                 payload.outro_path = uploadedFiles.outro;
+                                payload.outro_is_video = !!uploadedFiles.outro_is_video;
                             }
                             return payload;
                         })())
@@ -588,9 +626,20 @@
                             statusContainer.classList.remove('processing');
                             statusContainer.classList.add('success');
                             
-                            // Display video using output_url if available, fallback to constructed path
+                            const wantsOutro = !!uploadedFiles.outro;
+                            const hasFinal = !!(data.final_output_url || data.final_output);
+                            if (wantsOutro && !hasFinal) {
+                                statusMessage.textContent = 'Finishing outro...';
+                                statusProgress.value = 99;
+                                return;
+                            }
+
                             let previewUrl = null;
-                            if (data.output_url) {
+                            if (data.final_output_url) {
+                                previewUrl = data.final_output_url.startsWith('http') ? data.final_output_url : `${API_BASE_URL}${data.final_output_url}`;
+                            } else if (data.final_output) {
+                                previewUrl = `${API_BASE_URL}/outputs/${data.final_output.split(/[/\\]/).pop()}`;
+                            } else if (data.output_url) {
                                 previewUrl = data.output_url.startsWith('http') ? data.output_url : `${API_BASE_URL}${data.output_url}`;
                             } else if (data.output) {
                                 previewUrl = `${API_BASE_URL}/outputs/${data.output.split(/[/\\]/).pop()}`;
