@@ -6,6 +6,8 @@ import uuid
 import time
 import subprocess
 import werkzeug.utils
+import json
+from shutil import which
 
 # Standardized absolute imports from backend package
 try:
@@ -113,6 +115,209 @@ def parse_bg_color(color_str):
     except Exception:
         pass
     return None
+
+def _parse_bool(value):
+    try:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("1", "true", "yes", "y", "on"):
+                return True
+            if s in ("0", "false", "no", "n", "off", ""):
+                return False
+        return False
+    except Exception:
+        return False
+
+def _resolve_ffprobe_path():
+    try:
+        fp = which('ffprobe') or which('ffprobe.exe')
+        if fp:
+            return fp
+    except Exception:
+        pass
+    try:
+        ff = FFMPEG_PATH
+        if ff:
+            base = os.path.basename(ff).lower()
+            if base in ('ffmpeg', 'ffmpeg.exe'):
+                cand = os.path.join(os.path.dirname(ff), 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+                if os.path.exists(cand):
+                    return cand
+    except Exception:
+        pass
+    return 'ffprobe'
+
+def _parse_ffprobe_rate(rate_str):
+    try:
+        s = str(rate_str or '').strip()
+        if not s or s == '0/0':
+            return None
+        if '/' in s:
+            num, den = s.split('/', 1)
+            n = float(num)
+            d = float(den)
+            if d == 0:
+                return None
+            v = n / d
+            if v > 0:
+                return v
+            return None
+        v = float(s)
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+def _probe_media_basic(media_path):
+    ffprobe = _resolve_ffprobe_path()
+    cmd = [
+        ffprobe,
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-show_entries', 'stream=codec_type,width,height,r_frame_rate,sample_rate,channels',
+        '-of', 'json',
+        media_path,
+    ]
+    out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+    data = json.loads(out or '{}')
+    streams = data.get('streams') or []
+    fmt = data.get('format') or {}
+    v = None
+    a = None
+    for s in streams:
+        if not isinstance(s, dict):
+            continue
+        if v is None and s.get('codec_type') == 'video':
+            v = s
+        if a is None and s.get('codec_type') == 'audio':
+            a = s
+    duration = 0.0
+    try:
+        duration = float(fmt.get('duration') or 0.0)
+    except Exception:
+        duration = 0.0
+    width = int(v.get('width') or 0) if v else 0
+    height = int(v.get('height') or 0) if v else 0
+    fps = _parse_ffprobe_rate(v.get('r_frame_rate') if v else None)
+    has_audio = bool(a is not None)
+    return {
+        'duration': duration,
+        'width': width,
+        'height': height,
+        'fps': fps,
+        'has_audio': has_audio,
+    }
+
+def _append_video_keep_outro_intact(base_video_path, outro_video_path, final_path, filelist_path):
+    try:
+        bv_norm = base_video_path.replace("\\", "/")
+        ov_norm = outro_video_path.replace("\\", "/")
+        with open(filelist_path, 'w', encoding='utf-8') as f:
+            f.write(f"file '{bv_norm}'\n")
+            f.write(f"file '{ov_norm}'\n")
+        concat_cmd = [
+            FFMPEG_PATH, '-y',
+            '-f', 'concat', '-safe', '0', '-i', filelist_path,
+            '-c', 'copy', '-movflags', 'faststart',
+            final_path,
+        ]
+        subprocess.run(concat_cmd, check=True)
+        return True
+    except Exception:
+        return False
+
+def _reencode_append_video_preserve_outro(base_video_path, outro_video_path, final_path):
+    try:
+        info = _probe_media_basic(outro_video_path)
+    except Exception as e:
+        print(f"Outro probe failed: {e}")
+        return False
+    try:
+        base_info = _probe_media_basic(base_video_path)
+    except Exception:
+        base_info = {'duration': 0.0, 'has_audio': True}
+
+    ow = int(info.get('width') or 0)
+    oh = int(info.get('height') or 0)
+    ofps = info.get('fps') or 0.0
+    dur = float(info.get('duration') or 0.0)
+    has_outro_audio = bool(info.get('has_audio'))
+    tw = int(base_info.get('width') or 0)
+    th = int(base_info.get('height') or 0)
+    tfps = base_info.get('fps') or 0.0
+    base_dur = float(base_info.get('duration') or 0.0)
+    has_base_audio = bool(base_info.get('has_audio'))
+
+    if tw <= 0 or th <= 0:
+        if ow > 0 and oh > 0:
+            tw, th = ow, oh
+        else:
+            tw, th = 1920, 1080
+    if not (tfps and tfps > 0):
+        if ofps and ofps > 0:
+            tfps = ofps
+        else:
+            tfps = 24.0
+
+    encoder = FFMPEG_ENCODER or 'libx264'
+    preset = FFMPEG_PRESET or 'medium'
+    threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
+    tune = FFMPEG_TUNE
+    crf = FFMPEG_CRF
+
+    norm_v = (
+        f"scale={tw}:{th}:force_original_aspect_ratio=decrease:flags=bicubic,"
+        f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={tfps}"
+    )
+
+    parts = [
+        f"[0:v]{norm_v},setpts=PTS-STARTPTS[v0]",
+        f"[1:v]{norm_v},setpts=PTS-STARTPTS[v1]",
+    ]
+    if has_base_audio:
+        parts.append("[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]")
+    else:
+        if base_dur <= 0.0:
+            print("Base has no audio and duration is unknown; cannot synthesize silent base audio.")
+            return False
+        parts.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{base_dur},asetpts=N/SR/TB[a0]")
+    if has_outro_audio:
+        parts.append("[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1]")
+    else:
+        if dur <= 0.0:
+            print("Outro has no audio and duration is unknown; cannot synthesize silent outro audio.")
+            return False
+        parts.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{dur},asetpts=N/SR/TB[a1]")
+    parts.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]")
+    fc = ";".join(parts)
+
+    reenc_cmd = [
+        FFMPEG_PATH, '-y',
+        '-i', base_video_path,
+        '-i', outro_video_path,
+        '-filter_complex', fc,
+        '-map', '[v]', '-map', '[a]',
+        '-c:v', encoder, '-preset', str(preset),
+        *( ['-tune', str(tune)] if tune else [] ),
+        *( ['-crf', str(crf if crf else 20)] ),
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-ar', '44100',
+        '-ac', '2',
+        '-b:a', '192k',
+        '-threads', threads,
+        '-movflags', 'faststart',
+        final_path,
+    ]
+    try:
+        subprocess.run(reenc_cmd, check=True)
+        return True
+    except Exception as e2:
+        print(f"Re-encode concat failed: {e2}")
+        return False
 
 @app.route('/', methods=['GET'])
 def index():
@@ -442,56 +647,11 @@ def _append_outro_video_async(job_id, base_video_path, outro_video_path):
         session_dir = os.path.dirname(base_video_path)
         final_path = os.path.join(session_dir, f"{base_name}_final.mp4")
         filelist_path = os.path.join(session_dir, f"{base_name}_concat.txt")
-        try:
-            bv_norm = base_video_path.replace("\\", "/")
-            ov_norm = outro_video_path.replace("\\", "/")
-            with open(filelist_path, 'w', encoding='utf-8') as f:
-                f.write(f"file '{bv_norm}'\n")
-                f.write(f"file '{ov_norm}'\n")
-            concat_cmd = [
-                FFMPEG_PATH, '-y',
-                '-f', 'concat', '-safe', '0', '-i', filelist_path,
-                '-c', 'copy', '-movflags', 'faststart',
-                final_path,
-            ]
-            subprocess.run(concat_cmd, check=True)
-        except Exception as e:
-            print(f"Stream-copy concat failed, attempting re-encode: {e}")
-            encoder = FFMPEG_ENCODER or 'libx264'
-            preset = FFMPEG_PRESET or 'medium'
-            threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
-            tune = FFMPEG_TUNE
-            crf = FFMPEG_CRF
-            fc = (
-                "[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v0];"
-                "[1:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v1];"
-                "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
-                "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
-                "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
-            )
-            reenc_cmd = [
-                FFMPEG_PATH, '-y',
-                '-i', base_video_path,
-                '-i', outro_video_path,
-                '-filter_complex', fc,
-                '-map', '[v]', '-map', '[a]',
-                '-c:v', encoder, '-preset', str(preset),
-                *( ['-tune', str(tune)] if tune else [] ),
-                *( ['-crf', str(crf if crf else 20)] ),
-                '-pix_fmt', 'yuv420p',
-                '-c:a', 'aac',
-                '-ar', '44100',
-                '-ac', '2',
-                '-b:a', '192k',
-                '-threads', threads,
-                '-movflags', 'faststart',
-                final_path,
-            ]
-            try:
-                subprocess.run(reenc_cmd, check=True)
-            except Exception as e2:
-                print(f"Re-encode concat failed: {e2}")
-                return
+        ok = _append_video_keep_outro_intact(base_video_path, outro_video_path, final_path, filelist_path)
+        if not ok:
+            ok = _reencode_append_video_preserve_outro(base_video_path, outro_video_path, final_path)
+        if not ok:
+            return
         try:
             jobs[job_id]["final_output"] = final_path
             rel_final = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
@@ -600,49 +760,11 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
         if outro_path and os.path.exists(outro_path) and bool(outro_is_video):
             outro_video_path = outro_path
             filelist_path = os.path.join(session_dir, f"{base_name}_instrument_concat.txt")
-            try:
-                inst_norm = instrument_segment.replace("\\", "/")
-                outro_norm = outro_video_path.replace("\\", "/")
-                with open(filelist_path, 'w', encoding='utf-8') as f:
-                    f.write(f"file '{inst_norm}'\n")
-                    f.write(f"file '{outro_norm}'\n")
-                concat_cmd = [
-                    FFMPEG_PATH, '-y',
-                    '-f', 'concat', '-safe', '0', '-i', filelist_path,
-                    '-c', 'copy', '-movflags', 'faststart',
-                    final_path,
-                ]
-                subprocess.run(concat_cmd, check=True)
-            except Exception:
-                try:
-                    fc = (
-                        "[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v0];"
-                        "[1:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080,setsar=1,fps=24[v1];"
-                        "[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0];"
-                        "[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1];"
-                        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
-                    )
-                    reenc_cmd = [
-                        FFMPEG_PATH, '-y',
-                        '-i', instrument_segment,
-                        '-i', outro_video_path,
-                        '-filter_complex', fc,
-                        '-map', '[v]', '-map', '[a]',
-                        '-c:v', encoder, '-preset', str(preset),
-                        *( ['-tune', str(tune)] if tune else [] ),
-                        *( ['-crf', str(crf if crf else 20)] ),
-                        '-pix_fmt', 'yuv420p',
-                        '-c:a', 'aac',
-                        '-ar', '44100',
-                        '-ac', '2',
-                        '-b:a', '192k',
-                        '-threads', threads,
-                        '-movflags', 'faststart',
-                        final_path,
-                    ]
-                    subprocess.run(reenc_cmd, check=True)
-                except Exception:
-                    return
+            ok = _append_video_keep_outro_intact(instrument_segment, outro_video_path, final_path, filelist_path)
+            if not ok:
+                ok = _reencode_append_video_preserve_outro(instrument_segment, outro_video_path, final_path)
+            if not ok:
+                return
         elif outro_path and os.path.exists(outro_path):
             outro_base = os.path.splitext(os.path.basename(outro_path))[0]
             outro_wav = os.path.join(UPLOAD_DIR, f"{outro_base}.wav")
@@ -1141,10 +1263,10 @@ def generate_video():
     alignment_json = data.get('alignment_json')
     language = data.get('language')
     pause_config = data.get('pause')
-    sync_refine = data.get('sync_refine', False)
+    sync_refine = _parse_bool(data.get('sync_refine', False))
     
     outro_path = data.get('outro_path')
-    outro_is_video = bool(data.get('outro_is_video'))
+    outro_is_video = _parse_bool(data.get('outro_is_video'))
     song_title = data.get('song_title')
     artist_name = data.get('artist_name')
     
