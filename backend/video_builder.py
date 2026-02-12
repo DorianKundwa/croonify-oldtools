@@ -315,6 +315,19 @@ def _load_pil_font(font_name=DEFAULT_FONT, fontsize=DEFAULT_FONTSIZE):
     except Exception:
         return ImageFont.load_default()
 
+def _escape_drawtext_text(text):
+    try:
+        s = str(text or "")
+        s = s.replace('\\', r'\\')
+        s = s.replace("'", r"\'")
+        s = s.replace(":", r"\:")
+        s = s.replace("%", r"\%")
+        s = s.replace("\n", r"\\n")
+        s = s.replace("\r", "")
+        return s
+    except Exception:
+        return ""
+
 def generate_thumbnail_image(title, artist, out_path,
                              bg_color=DEFAULT_BG_COLOR,
                              image_path=None,
@@ -342,16 +355,13 @@ def generate_thumbnail_image(title, artist, out_path,
             bg = Image.new('RGB', (width, height), base_color)
 
         draw = ImageDraw.Draw(bg)
-        # Colors
         fg = 'white'
-        stroke_fill = 'black'
 
         # Base sizes: thumbnails should be larger than video text
         title_fs_base = int(title_fontsize or int(DEFAULT_FONTSIZE * 1.8))
         artist_fs_base = int(artist_fontsize or max(32, int(title_fs_base * 0.7)))
 
-        # Dynamic stroke width based on font size
-        stroke_w = max(DEFAULT_STROKE_WIDTH, int(max(title_fs_base, artist_fs_base) * 0.06))
+        stroke_w = 0
 
         # Helper to measure and fit text into target width with margins
         def _measure(txt, font, sw):
@@ -380,21 +390,29 @@ def generate_thumbnail_image(title, artist, out_path,
         title_w, title_h = _measure(title or '', title_font, stroke_w)
         artist_w, artist_h = _measure(artist or '', artist_font, stroke_w)
 
-        # Layout: title at ~35% height, artist moved down slightly (~64%)
+        # Layout: title higher and artist slightly higher to match sample composition
         title_x = width // 2
-        title_y = int(height * 0.35)
+        title_y = int(height * 0.32)
         artist_x = width // 2
-        artist_y = int(height * 0.65)
+        artist_y = int(height * 0.62)
 
         # Render centered text with stroke
         if title:
-            draw.text((title_x, title_y), str(title), font=title_font,
-                      fill=fg, stroke_width=stroke_w, stroke_fill=stroke_fill,
-                      anchor='mm')
+            if stroke_w > 0:
+                draw.text((title_x, title_y), str(title), font=title_font,
+                          fill=fg, stroke_width=stroke_w, stroke_fill=fg,
+                          anchor='mm')
+            else:
+                draw.text((title_x, title_y), str(title), font=title_font,
+                          fill=fg, anchor='mm')
         if artist:
-            draw.text((artist_x, artist_y), str(artist), font=artist_font,
-                      fill=fg, stroke_width=stroke_w, stroke_fill=stroke_fill,
-                      anchor='mm')
+            if stroke_w > 0:
+                draw.text((artist_x, artist_y), str(artist), font=artist_font,
+                          fill=fg, stroke_width=stroke_w, stroke_fill=fg,
+                          anchor='mm')
+            else:
+                draw.text((artist_x, artist_y), str(artist), font=artist_font,
+                          fill=fg, anchor='mm')
 
         # Save
         ext = os.path.splitext(out_path)[1].lower()
@@ -435,7 +453,7 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
                      use_highlight=False, progress_callback=None, chunk_size=10,
                      font_name=DEFAULT_FONT, fontsize=DEFAULT_FONTSIZE,
                      encoder=None, preset=None, ffmpeg_threads=None,
-                     outro_audio_path=None, vocal_onset=None, trim_intro=False, trim_end_silence=True, min_tail_silence=1.5,
+                     outro_audio_path=None, outro_text=None, vocal_onset=None, trim_intro=False, trim_end_silence=True, min_tail_silence=1.5,
                      pause_markers=None, pause_opacity=0.22):
     """
     Build a lyric video using MoviePy with performance optimizations
@@ -795,8 +813,12 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
                 alpha_expr = None
                 if dur > 0.0 and (fi > 0.0 or fo > 0.0):
                     alpha_expr = f"if(lt(t,{start_t+fi}),(t-{start_t})/{fi},if(lt(t,{dur-fo}),1,max(0,({dur}-t)/{fo})))"
+                msg = str(outro_text).strip() if outro_text is not None else ""
+                if not msg:
+                    msg = OUTRO_MESSAGE_TEXT
+                msg = _escape_drawtext_text(msg)
                 dt = (
-                    f"drawtext={font_expr}:text='{OUTRO_MESSAGE_TEXT}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={fs}:box=1:boxcolor={boxc}"
+                    f"drawtext={font_expr}:text='{msg}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={fs}:box=1:boxcolor={boxc}"
                     + (f":alpha='{alpha_expr}'" if alpha_expr else "")
                     + f":enable='gte(t,{start_t})'"
                 )

@@ -14,7 +14,7 @@ let server;
 
 // Create necessary directories
 const createDirectories = () => {
-  const dirs = ['uploads', 'temp', 'output'];
+  const dirs = ['uploads', 'temp', 'outputs', 'alignments'];
   dirs.forEach(dir => {
     const dirPath = path.join(__dirname, dir);
     if (!fs.existsSync(dirPath)) {

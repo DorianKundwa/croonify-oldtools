@@ -268,13 +268,23 @@ async function pollJobStatus() {
             const response = await fetch(`http://localhost:5000/status/${jobId}`);
             const data = await response.json();
             
-            if (data.status === 'completed') {
+            if (data.status === 'completed' || data.status === 'done') {
                 showProgress(100, 'Video generated successfully!');
                 alignmentData = data.alignment;
                 
                 // Load the generated video
                 const videoPlayer = document.getElementById('videoPlayer');
-                videoPlayer.src = `http://localhost:5000/download/${jobId}`;
+                let previewUrl = null;
+                if (data.final_output_url) {
+                    previewUrl = data.final_output_url.startsWith('http') ? data.final_output_url : `http://localhost:5000${data.final_output_url}`;
+                } else if (data.output_url) {
+                    previewUrl = data.output_url.startsWith('http') ? data.output_url : `http://localhost:5000${data.output_url}`;
+                } else if (data.output) {
+                    previewUrl = `http://localhost:5000/outputs/${data.output.split(/[/\\]/).pop()}`;
+                }
+                if (previewUrl) {
+                    videoPlayer.src = previewUrl;
+                }
                 videoPlayer.style.display = 'block';
                 document.getElementById('videoControls').style.display = 'flex';
                 document.getElementById('placeholder').style.display = 'none';
@@ -282,13 +292,13 @@ async function pollJobStatus() {
                 showMessage('Video generated successfully!', 'success');
                 hideProgress();
                 
-            } else if (data.status === 'processing') {
+            } else if (data.status === 'processing' || data.status === 'running') {
                 const progress = data.progress || 50;
                 showProgress(progress, 'Processing video...');
                 setTimeout(checkStatus, 2000);
                 
             } else if (data.status === 'error') {
-                throw new Error(data.message || 'Processing failed');
+                throw new Error(data.error || data.message || 'Processing failed');
                 
             } else {
                 setTimeout(checkStatus, 2000);

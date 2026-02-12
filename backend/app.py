@@ -132,6 +132,19 @@ def _parse_bool(value):
     except Exception:
         return False
 
+def _escape_drawtext_text(text):
+    try:
+        s = str(text or "")
+        s = s.replace('\\', r'\\')
+        s = s.replace("'", r"\'")
+        s = s.replace(":", r"\:")
+        s = s.replace("%", r"\%")
+        s = s.replace("\n", r"\\n")
+        s = s.replace("\r", "")
+        return s
+    except Exception:
+        return ""
+
 def _resolve_ffprobe_path():
     try:
         fp = which('ffprobe') or which('ffprobe.exe')
@@ -212,22 +225,61 @@ def _probe_media_basic(media_path):
     }
 
 def _append_video_keep_outro_intact(base_video_path, outro_video_path, final_path, filelist_path):
+    remux_a = None
+    remux_b = None
     try:
-        bv_norm = base_video_path.replace("\\", "/")
-        ov_norm = outro_video_path.replace("\\", "/")
+        session_dir = os.path.dirname(final_path)
+        base_tag = os.path.splitext(os.path.basename(final_path))[0]
+        remux_a = os.path.join(session_dir, f"{base_tag}_remux0.mp4")
+        remux_b = os.path.join(session_dir, f"{base_tag}_remux1.mp4")
+
+        remux_cmd_base = [
+            FFMPEG_PATH, '-y',
+            '-fflags', '+genpts',
+            '-i', base_video_path,
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            '-movflags', 'faststart',
+            remux_a,
+        ]
+        remux_cmd_outro = [
+            FFMPEG_PATH, '-y',
+            '-fflags', '+genpts',
+            '-i', outro_video_path,
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            '-movflags', 'faststart',
+            remux_b,
+        ]
+        subprocess.run(remux_cmd_base, check=True)
+        subprocess.run(remux_cmd_outro, check=True)
+
+        bv_norm = remux_a.replace("\\", "/")
+        ov_norm = remux_b.replace("\\", "/")
         with open(filelist_path, 'w', encoding='utf-8') as f:
             f.write(f"file '{bv_norm}'\n")
             f.write(f"file '{ov_norm}'\n")
         concat_cmd = [
             FFMPEG_PATH, '-y',
             '-f', 'concat', '-safe', '0', '-i', filelist_path,
-            '-c', 'copy', '-movflags', 'faststart',
+            '-c', 'copy',
+            '-movflags', 'faststart',
             final_path,
         ]
         subprocess.run(concat_cmd, check=True)
         return True
     except Exception:
         return False
+    finally:
+        try:
+            for p in (remux_a, remux_b):
+                try:
+                    if p and os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 def _reencode_append_video_preserve_outro(base_video_path, outro_video_path, final_path):
     try:
@@ -270,7 +322,7 @@ def _reencode_append_video_preserve_outro(base_video_path, outro_video_path, fin
 
     norm_v = (
         f"scale={tw}:{th}:force_original_aspect_ratio=decrease:flags=bicubic,"
-        f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={tfps}"
+        f"pad={tw}:{th}:(tw-iw)/2:(th-ih)/2,setsar=1,fps={tfps}"
     )
 
     parts = [
@@ -278,14 +330,14 @@ def _reencode_append_video_preserve_outro(base_video_path, outro_video_path, fin
         f"[1:v]{norm_v},setpts=PTS-STARTPTS[v1]",
     ]
     if has_base_audio:
-        parts.append("[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]")
+        parts.append("[0:a]aformat=sample_rates=44100:channel_layouts=stereo,asetpts=PTS-STARTPTS[a0]")
     else:
         if base_dur <= 0.0:
             print("Base has no audio and duration is unknown; cannot synthesize silent base audio.")
             return False
         parts.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{base_dur},asetpts=N/SR/TB[a0]")
     if has_outro_audio:
-        parts.append("[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1]")
+        parts.append("[1:a]aformat=sample_rates=44100:channel_layouts=stereo,asetpts=PTS-STARTPTS[a1]")
     else:
         if dur <= 0.0:
             print("Outro has no audio and duration is unknown; cannot synthesize silent outro audio.")
@@ -300,6 +352,7 @@ def _reencode_append_video_preserve_outro(base_video_path, outro_video_path, fin
         '-i', outro_video_path,
         '-filter_complex', fc,
         '-map', '[v]', '-map', '[a]',
+        '-shortest',
         '-c:v', encoder, '-preset', str(preset),
         *( ['-tune', str(tune)] if tune else [] ),
         *( ['-crf', str(crf if crf else 20)] ),
@@ -425,7 +478,7 @@ def upload_file():
         'background_path': background_path
     })
 
-def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None, font_size=None):
+def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None, font_size=None, outro_text=None):
     """Post-processing: create an outro segment (image or solid color + outro audio)
     and append to the already-rendered base video using fast concat when possible.
     Updates jobs[job_id] with final_output and final_output_url upon completion.
@@ -504,8 +557,12 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
                 alpha_expr = f"if(lt(t,{fi}),t/{fi},if(lt(t,{max(0.0,out_dur-fo)}),1,max(0,({out_dur}-t)/{fo})))"
         except Exception:
             alpha_expr = None
+        safe_text = str(outro_text).strip() if outro_text is not None else ""
+        if not safe_text:
+            safe_text = OUTRO_MESSAGE_TEXT
+        safe_text = _escape_drawtext_text(safe_text)
         dt = (
-            f"drawtext={font_expr}:text='{OUTRO_MESSAGE_TEXT}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs}:box=1:boxcolor={boxc}"
+            f"drawtext={font_expr}:text='{safe_text}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs}:box=1:boxcolor={boxc}"
             + (f":alpha='{alpha_expr}'" if alpha_expr else "")
         )
         if use_image:
@@ -677,7 +734,7 @@ def _append_outro_video_async(job_id, base_video_path, outro_video_path):
         return
 
 
-def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, outro_is_video=False, session_dir=None, base_name=None, font_name=None, font_size=None):
+def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_image_path=None, outro_path=None, outro_is_video=False, session_dir=None, base_name=None, font_name=None, font_size=None, outro_text=None):
     try:
         if not (instrumental_path and os.path.exists(instrumental_path) and session_dir and base_name):
             return
@@ -811,8 +868,12 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                     alpha_expr2 = f"if(lt(t,{fi2}),t/{fi2},if(lt(t,{max(0.0,out_dur2-fo2)}),1,max(0,({out_dur2}-t)/{fo2})))"
             except Exception:
                 alpha_expr2 = None
+            safe_text2 = str(outro_text).strip() if outro_text is not None else ""
+            if not safe_text2:
+                safe_text2 = OUTRO_MESSAGE_TEXT
+            safe_text2 = _escape_drawtext_text(safe_text2)
             dt2 = (
-                f"drawtext={font_expr2}:text='{OUTRO_MESSAGE_TEXT}':x=(w-text_w)/2:y={pos_y2}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs2}:box=1:boxcolor={boxc2}"
+                f"drawtext={font_expr2}:text='{safe_text2}':x=(w-text_w)/2:y={pos_y2}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs2}:box=1:boxcolor={boxc2}"
                 + (f":alpha='{alpha_expr2}'" if alpha_expr2 else "")
             )
             if use_image:
@@ -924,7 +985,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
         pass
 
 
-def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
+def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, outro_text=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
     """Background thread function to process a job"""
     try:
         # Update job status
@@ -1104,9 +1165,10 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             font_name=font_name,
             fontsize=fontsize or 70,
             outro_audio_path=None,
+            outro_text=outro_text,
             vocal_onset=None,
             trim_intro=False,
-            trim_end_silence=False,
+            trim_end_silence=bool(outro_path),
             pause_markers=breaks,
             pause_opacity=0.22
         )
@@ -1223,14 +1285,14 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 t.daemon = True
                 t.start()
             elif outro_path:
-                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70))
+                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text))
                 t.daemon = True
                 t.start()
         except Exception as e:
             print(f"Failed to start outro append thread: {e}")
         try:
             if instrumental_path and os.path.exists(instrumental_path):
-                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, bool(outro_is_video), session_dir, base_name, font_name, fontsize or 70))
+                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, bool(outro_is_video), session_dir, base_name, font_name, fontsize or 70, outro_text))
                 t2.daemon = True
                 t2.start()
         except Exception:
@@ -1267,6 +1329,7 @@ def generate_video():
     
     outro_path = data.get('outro_path')
     outro_is_video = _parse_bool(data.get('outro_is_video'))
+    outro_text = data.get('outro_text')
     song_title = data.get('song_title')
     artist_name = data.get('artist_name')
     
@@ -1302,7 +1365,7 @@ def generate_video():
         alignment_override = None
     sep_pref = data.get('separation_engine') or data.get('separation_prefer') or 'auto'
     out_fmt = (data.get('output_format') or 'mp4').lower()
-    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, outro_is_video, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language))
+    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, outro_is_video, outro_text, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language))
     thread.daemon = True
     thread.start()
     
