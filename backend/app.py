@@ -613,12 +613,18 @@ def _mark_task_complete(job_id, session_dir, files_to_keep):
                 import time
                 time.sleep(2) # Brief pause for file handles to close
                 if session_dir and os.path.exists(session_dir):
+                    # Normalize all keep paths once for efficient comparison
+                    norm_keep = [os.path.normpath(p).lower() for p in (files_to_keep or [])]
+                    
                     for f in os.listdir(session_dir):
                         f_path = os.path.join(session_dir, f)
-                        if os.path.isfile(f_path) and f_path not in files_to_keep:
+                        norm_f = os.path.normpath(f_path).lower()
+                        
+                        if os.path.isfile(f_path) and norm_f not in norm_keep:
                             if not f.endswith('.log') and not f.endswith('.json'):
                                 try:
                                     os.remove(f_path)
+                                    print(f"Cleanup: removed {f}")
                                 except Exception as e:
                                     print(f"Cleanup error for {f}: {e}")
             except Exception as e:
@@ -685,7 +691,14 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
                 _fp = fallback if os.path.exists(fallback) else None
             except Exception:
                 _fp = None
-        font_expr = ("fontfile=" + _fp.replace("\\", "/")) if _fp else (f"font={font_name}" if font_name else "font=Arial")
+        # Escape colon for Windows paths in FFmpeg filters
+        if _fp:
+            # Replace \ with / and escape : with \:
+            escaped_fp = _fp.replace("\\", "/").replace(":", "\\:")
+            font_expr = f"fontfile='{escaped_fp}'"
+        else:
+            font_expr = f"font={font_name}" if font_name else "font=Arial"
+
         try:
             out_fs = int(font_size) if font_size else 72
         except Exception:
@@ -715,6 +728,8 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
         if not safe_text:
             safe_text = OUTRO_MESSAGE_TEXT
         safe_text = _escape_drawtext_text(safe_text)
+        
+        # Use a simpler drawtext string to avoid parsing errors
         dt = (
             f"drawtext={font_expr}:text='{safe_text}':x=(w-text_w)/2:y={pos_y}:fontcolor={OUTRO_FONT_COLOR}:fontsize={out_fs}:box=1:boxcolor={boxc}"
             + (f":alpha='{alpha_expr}'" if alpha_expr else "")
@@ -777,8 +792,8 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
         # Fast concat (stream copy) when possible
         filelist_path = os.path.join(session_dir, f"{base_name}_concat.txt")
         try:
-            bv_norm = base_video_path.replace("\\", "/")
-            outro_norm = outro_segment.replace("\\", "/")
+            bv_norm = base_video_path.replace("\\", "/").replace("'", "'\\''")
+            outro_norm = outro_segment.replace("\\", "/").replace("'", "'\\''")
             with open(filelist_path, 'w', encoding='utf-8') as f:
                 f.write(f"file '{bv_norm}'\n")
                 f.write(f"file '{outro_norm}'\n")
@@ -845,19 +860,31 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
         try:
             # Always delete intermediate outro segment and concat list
             to_delete = [outro_segment, filelist_path]
-            # Only delete base video if it's NOT a final kept file
-            if not is_instrumental: # For main video, base_video_path is an intermediate
-                 to_delete.append(base_video_path)
-            elif is_instrumental: # For instrumental, base_video_path was the variant base
-                 to_delete.append(base_video_path)
+            # Also cleanup intermediate lyrics video if it was renamed to _meta
+            # Find any _lyrics.mp4 or _lyrics_meta.mp4 that isn't the final output
+            if not is_instrumental:
+                # For main video, base_video_path is likely ..._lyrics_meta.mp4
+                to_delete.append(base_video_path)
+                # Also try to find the pre-meta version
+                pre_meta = base_video_path.replace("_lyrics_meta.", "_lyrics.")
+                if pre_meta != base_video_path:
+                    to_delete.append(pre_meta)
+            else:
+                # For instrumental, base_video_path is the variant base without outro
+                to_delete.append(base_video_path)
                  
             for p in to_delete:
                 try:
                     if p and os.path.exists(p):
-                        os.remove(p)
-                        print(f"{prefix} Cleaned up: {p}")
+                        # Ensure we don't delete the final output file if it's the same as base_video_path
+                        # (though here it shouldn't be, as we added _final suffix)
+                        norm_p = os.path.normpath(p).lower()
+                        norm_final = os.path.normpath(final_path).lower()
+                        if norm_p != norm_final:
+                            os.remove(p)
+                            print(f"{prefix} Cleaned up intermediate: {p}")
                 except Exception as de:
-                    print(f"{prefix} Cleanup warning: failed to delete {p}: {de}")
+                    pass # Silent cleanup for best-effort
             
             # Only clear main output if this is the main outro thread
             if not is_instrumental:
@@ -1034,7 +1061,13 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
                     _fp2 = fallback2 if os.path.exists(fallback2) else None
                 except Exception:
                     _fp2 = None
-            font_expr2 = ("fontfile=" + _fp2.replace("\\", "/")) if _fp2 else (f"font={font_name}" if font_name else "font=Arial")
+            # Escape colon for Windows paths in FFmpeg filters
+            if _fp2:
+                # Replace \ with / and escape : with \:
+                escaped_fp2 = _fp2.replace("\\", "/").replace(":", "\\:")
+                font_expr2 = f"fontfile='{escaped_fp2}'"
+            else:
+                font_expr2 = f"font={font_name}" if font_name else "font=Arial"
             try:
                 out_fs2 = int(font_size) if font_size else 72
             except Exception:
@@ -1383,7 +1416,17 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 print("[video mode] All FFmpeg overlay methods failed; keeping greenscreen fallback")
 
         # Add metadata to the base video
-        output_path = add_metadata(output_path, os.path.join(session_dir, f"{base_name}_lyrics_meta.{ext}"), title=song_title, artist=artist_name)
+        meta_path = os.path.join(session_dir, f"{base_name}_lyrics_meta.{ext}")
+        final_meta_path = add_metadata(output_path, meta_path, title=song_title, artist=artist_name)
+        
+        # Cleanup intermediate lyrics video after metadata is added
+        if final_meta_path != output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+        
+        output_path = final_meta_path
 
         # Update job status
         jobs[job_id]["status"] = "done"
@@ -1442,20 +1485,36 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             
             # Outro variant
             if outro_path:
-                jobs[job_id]["postprocess"] = "generating_variants"
-                t_outro = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text, False, files_to_keep))
-                t_outro.daemon = True
-                t_outro.start()
+                # Validate outro path before starting thread
+                if not os.path.exists(outro_path):
+                    print(f"[Job {job_id}] Warning: outro_path {outro_path} does not exist. Skipping.")
+                    jobs[job_id]["total_tasks"] -= 1
+                    if jobs[job_id]["total_tasks"] <= 0:
+                        jobs[job_id]["total_tasks"] = 1
+                        _mark_task_complete(job_id, session_dir, files_to_keep)
+                else:
+                    jobs[job_id]["postprocess"] = "generating_variants"
+                    t_outro = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text, False, files_to_keep))
+                    t_outro.daemon = True
+                    t_outro.start()
 
             # Instrumental variant
             if instrumental_path:
-                inst_output = os.path.join(session_dir, f"{base_name}_instrumental.{ext}")
-                t_inst = threading.Thread(target=_render_instrument_video_variant_async, args=(job_id, video_path, instrumental_path, alignment_path, inst_output, font_name, fontsize, song_title, artist_name, bg_rgb, bg_image_path, session_dir, files_to_keep, outro_path, outro_text))
-                t_inst.daemon = True
-                t_inst.start()
+                # Validate instrumental path before starting thread
+                if not os.path.exists(instrumental_path):
+                    print(f"[Job {job_id}] Warning: instrumental_path {instrumental_path} does not exist. Skipping.")
+                    jobs[job_id]["total_tasks"] -= 1
+                    if jobs[job_id]["total_tasks"] <= 0:
+                        jobs[job_id]["total_tasks"] = 1
+                        _mark_task_complete(job_id, session_dir, files_to_keep)
+                else:
+                    inst_output = os.path.join(session_dir, f"{base_name}_instrumental.{ext}")
+                    t_inst = threading.Thread(target=_render_instrument_video_variant_async, args=(job_id, video_path, instrumental_path, alignment_path, inst_output, font_name, fontsize, song_title, artist_name, bg_color, bg_image_path, session_dir, files_to_keep, outro_path, outro_text))
+                    t_inst.daemon = True
+                    t_inst.start()
             
             # If no variants at all, mark as complete to trigger cleanup of any intermediates
-            if total_tasks == 0:
+            if jobs[job_id]["total_tasks"] == 0:
                 # Add a dummy task count so cleanup works
                 jobs[job_id]["total_tasks"] = 1
                 _mark_task_complete(job_id, session_dir, files_to_keep)
@@ -1534,8 +1593,8 @@ def _render_instrument_video_variant_async(job_id, video_path, instrumental_path
                 files_to_keep=files_to_keep
             )
             
-            # The _append_outro_async will update jobs[job_id]["instrumental_video"] if is_instrumental is True
-            # Let's verify if the file was created
+            # After _append_outro_async finishes, output_path should be updated to the final version
+            # (Note: _append_outro_async already updates the job and keep list)
             inst_final = output_path.replace(".mp4", "_final.mp4")
             if os.path.exists(inst_final):
                 output_path = inst_final
@@ -1543,29 +1602,26 @@ def _render_instrument_video_variant_async(job_id, video_path, instrumental_path
             else:
                 print(f"[Instrumental] Outro appending failed or skipped for {output_path}")
         else:
-            # No outro for instrumental
-            pass
-
-        # Final keep list update and job status update
-        if output_path and os.path.exists(output_path):
-            if files_to_keep is not None and output_path not in files_to_keep:
-                files_to_keep.append(output_path)
+            # No outro for instrumental, but we still need to update the job status
+            if output_path and os.path.exists(output_path):
+                if files_to_keep is not None and output_path not in files_to_keep:
+                    files_to_keep.append(output_path)
+                
+                jobs[job_id]["instrumental_video"] = output_path
+                rel_inst = os.path.relpath(output_path, OUTPUT_DIR).replace("\\", "/")
+                jobs[job_id]["instrumental_video_url"] = f"/outputs/{rel_inst}"
+                print(f"Instrumental variant completed (no outro): {output_path}")
             
-            jobs[job_id]["instrumental_video"] = output_path
-            rel_inst = os.path.relpath(output_path, OUTPUT_DIR).replace("\\", "/")
-            jobs[job_id]["instrumental_video_url"] = f"/outputs/{rel_inst}"
-            print(f"Instrumental variant completed: {output_path}")
+            # Ensure task is marked complete since _append_outro_async wasn't called
+            _mark_task_complete(job_id, session_dir, files_to_keep)
 
     except Exception as e:
         print(f"Instrumental variant failed: {e}")
-    finally:
-        # If we didn't call _append_outro_async (which handles its own _mark_task_complete),
-        # we must mark it complete here.
-        if not (outro_path and os.path.exists(outro_path)):
-            try:
-                _mark_task_complete(job_id, session_dir, files_to_keep)
-            except:
-                pass
+        # Ensure task is marked complete on error
+        try:
+            _mark_task_complete(job_id, session_dir, files_to_keep)
+        except:
+            pass
 
 def process_job_old(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, outro_text=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
     pass
