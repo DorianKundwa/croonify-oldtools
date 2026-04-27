@@ -588,24 +588,68 @@ def upload_file():
         'is_video': is_video
     })
 
-def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None, font_size=None, outro_text=None):
+def _mark_task_complete(job_id, session_dir, files_to_keep):
+    """Internal helper to track concurrent variant generation tasks and 
+    trigger cleanup only when the last task finishes.
+    """
+    try:
+        if job_id not in jobs:
+            return
+            
+        # Initialize if not present
+        if "completed_tasks" not in jobs[job_id]:
+            jobs[job_id]["completed_tasks"] = 0
+            
+        jobs[job_id]["completed_tasks"] += 1
+        completed = jobs[job_id]["completed_tasks"]
+        total = jobs[job_id].get("total_tasks", 1)
+        
+        print(f"[Job {job_id}] Task complete: {completed}/{total}")
+        
+        if completed >= total:
+            print(f"[Job {job_id}] All tasks finished. Triggering cleanup.")
+            # Final cleanup
+            try:
+                import time
+                time.sleep(2) # Brief pause for file handles to close
+                if session_dir and os.path.exists(session_dir):
+                    for f in os.listdir(session_dir):
+                        f_path = os.path.join(session_dir, f)
+                        if os.path.isfile(f_path) and f_path not in files_to_keep:
+                            if not f.endswith('.log') and not f.endswith('.json'):
+                                try:
+                                    os.remove(f_path)
+                                except Exception as e:
+                                    print(f"Cleanup error for {f}: {e}")
+            except Exception as e:
+                print(f"Cleanup routine failed: {e}")
+    except Exception as e:
+        print(f"Error in _mark_task_complete: {e}")
+
+def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None, font_size=None, outro_text=None, is_instrumental=False, files_to_keep=None):
     """Post-processing: create an outro segment (image or solid color + outro audio)
     and append to the already-rendered base video using fast concat when possible.
     Updates jobs[job_id] with final_output and final_output_url upon completion.
     """
+    prefix = "[Instrumental Outro]" if is_instrumental else "[Main Outro]"
     try:
         if not (outro_path and os.path.exists(outro_path) and base_video_path and os.path.exists(base_video_path)):
+            print(f"{prefix} Missing files for outro: outro={outro_path}, base={base_video_path}")
+            _mark_task_complete(job_id, os.path.dirname(base_video_path) if base_video_path else None, files_to_keep)
             return
 
         # Convert outro audio to WAV for consistent handling
         outro_base = os.path.splitext(os.path.basename(outro_path))[0]
-        outro_wav = os.path.join(UPLOAD_DIR, f"{outro_base}.wav")
+        # Use unique name for instrumental outro wav to avoid race conditions
+        wav_name = f"{outro_base}_inst.wav" if is_instrumental else f"{outro_base}.wav"
+        outro_wav = os.path.join(UPLOAD_DIR, wav_name)
         try:
             convert_to_wav(outro_path, outro_wav)
             # Normalize outro WAV to avoid clipping or level jumps
             normalize_audio(outro_wav, outro_wav)
         except Exception as e:
             print(f"Outro conversion failed: {e}")
+            _mark_task_complete(job_id, os.path.dirname(base_video_path), files_to_keep)
             return
 
         # Paths (write alongside the base video inside its session folder)
@@ -727,6 +771,7 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
             subprocess.run(ffmpeg_cmd, check=True)
         except Exception as e:
             print(f"Failed to render outro segment: {e}")
+            _mark_task_complete(job_id, session_dir, files_to_keep)
             return
 
         # Fast concat (stream copy) when possible
@@ -769,33 +814,70 @@ def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_i
                 subprocess.run(reenc_cmd, check=True)
             except Exception as e2:
                 print(f"Re-encode concat failed: {e2}")
+                _mark_task_complete(job_id, session_dir, files_to_keep)
                 return
 
         # Update job with final output
         try:
-            jobs[job_id]["final_output"] = final_path
-            # Use relpath to preserve session subfolder in URL
-            rel_final = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
-            jobs[job_id]["final_output_url"] = f"/outputs/{rel_final}"
-            jobs[job_id]["stage"] = "Completed (outro appended)"
-        except Exception:
-            pass
+            if is_instrumental:
+                jobs[job_id]["instrumental_video"] = final_path
+                rel_final = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
+                jobs[job_id]["instrumental_video_url"] = f"/outputs/{rel_final}"
+                print(f"{prefix} Updated job with instrumental video: {final_path}")
+            else:
+                jobs[job_id]["final_output"] = final_path
+                # Use relpath to preserve session subfolder in URL
+                rel_final = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
+                jobs[job_id]["final_output_url"] = f"/outputs/{rel_final}"
+                jobs[job_id]["stage"] = "Completed (outro appended)"
+                print(f"{prefix} Updated job with main video: {final_path}")
+            
+            # Add to keep list if provided
+            if files_to_keep is not None and final_path not in files_to_keep:
+                files_to_keep.append(final_path)
+                
+        except Exception as e:
+            print(f"{prefix} Error updating job status: {e}")
 
         # After final is obtained, delete base lyrics video, outro segment and concat list
+        # For instrumental, we should NOT delete the base video if it's the main output!
+        # But here base_video_path is the instrumental variant's base.
         try:
-            for p in [base_video_path, outro_segment, filelist_path]:
+            # Always delete intermediate outro segment and concat list
+            to_delete = [outro_segment, filelist_path]
+            # Only delete base video if it's NOT a final kept file
+            if not is_instrumental: # For main video, base_video_path is an intermediate
+                 to_delete.append(base_video_path)
+            elif is_instrumental: # For instrumental, base_video_path was the variant base
+                 to_delete.append(base_video_path)
+                 
+            for p in to_delete:
                 try:
                     if p and os.path.exists(p):
                         os.remove(p)
+                        print(f"{prefix} Cleaned up: {p}")
                 except Exception as de:
-                    print(f"Cleanup warning: failed to delete {p}: {de}")
-            # Clear base output in job to avoid dangling links
-            try:
-                jobs[job_id]["output"] = None
-                jobs[job_id]["output_url"] = None
-            except Exception:
-                pass
+                    print(f"{prefix} Cleanup warning: failed to delete {p}: {de}")
+            
+            # Only clear main output if this is the main outro thread
+            if not is_instrumental:
+                try:
+                    jobs[job_id]["output"] = None
+                    jobs[job_id]["output_url"] = None
+                except Exception:
+                    pass
         except Exception:
+            pass
+        
+        # Mark this variant task as complete
+        _mark_task_complete(job_id, session_dir, files_to_keep)
+
+    except Exception as e:
+        print(f"{prefix} Fatal error in _append_outro_async: {e}")
+        # Ensure task is marked complete even on fatal error
+        try:
+            _mark_task_complete(job_id, os.path.dirname(base_video_path) if base_video_path else None, files_to_keep)
+        except:
             pass
     finally:
         # best-effort cleanup
@@ -1350,10 +1432,18 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
 
         # Variants generation
         try:
+            # Track how many async tasks we're launching for cleanup synchronization
+            total_tasks = 0
+            if outro_path: total_tasks += 1
+            if instrumental_path: total_tasks += 1
+            
+            jobs[job_id]["total_tasks"] = total_tasks
+            jobs[job_id]["completed_tasks"] = 0
+            
             # Outro variant
             if outro_path:
                 jobs[job_id]["postprocess"] = "generating_variants"
-                t_outro = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text))
+                t_outro = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text, False, files_to_keep))
                 t_outro.daemon = True
                 t_outro.start()
 
@@ -1363,20 +1453,13 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 t_inst = threading.Thread(target=_render_instrument_video_variant_async, args=(job_id, video_path, instrumental_path, alignment_path, inst_output, font_name, fontsize, song_title, artist_name, bg_rgb, bg_image_path, session_dir, files_to_keep, outro_path, outro_text))
                 t_inst.daemon = True
                 t_inst.start()
-            else:
-                # If no instrumental, cleanup immediately
-                def _cleanup_session(s_dir, keep_files):
-                    try:
-                        import time
-                        time.sleep(1)
-                        for f in os.listdir(s_dir):
-                            f_path = os.path.join(s_dir, f)
-                            if os.path.isfile(f_path) and f_path not in keep_files:
-                                if not f.endswith('.log') and not f.endswith('.json'):
-                                    try: os.remove(f_path)
-                                    except: pass
-                    except: pass
-                _cleanup_session(session_dir, files_to_keep)
+            
+            # If no variants at all, mark as complete to trigger cleanup of any intermediates
+            if total_tasks == 0:
+                # Add a dummy task count so cleanup works
+                jobs[job_id]["total_tasks"] = 1
+                _mark_task_complete(job_id, session_dir, files_to_keep)
+
         except Exception as e:
             print(f"Failed to start variant threads: {e}")
         
@@ -1433,58 +1516,56 @@ def _render_instrument_video_variant_async(job_id, video_path, instrumental_path
             
             output_path = final_path
 
-            # Step 4: Handle Outro for Instrumental
-            if outro_path and os.path.exists(outro_path):
-                print(f"[Instrumental] Appending outro to: {output_path}")
-                # Create a specialized version of outro append for instrumental
-                # We need to wait for it to finish before marking as done
-                _append_outro_async(
-                    job_id, 
-                    output_path, 
-                    outro_path, 
-                    bg_color=bg_rgb, 
-                    bg_image_path=bg_image_path, 
-                    font_name=font_name, 
-                    font_size=fontsize or 70, 
-                    outro_text=outro_text
-                )
-                
-                # Check if it finished and update output_path
-                # _append_outro_async updates jobs[job_id]["final_output"]
-                # But that might conflict with the main video's final output.
-                # Let's check for the existence of the expected final file.
-                inst_final = output_path.replace(".mp4", "_final.mp4")
-                if os.path.exists(inst_final):
-                    output_path = inst_final
+        # Step 4: Handle Outro for Instrumental
+        if outro_path and os.path.exists(outro_path):
+            print(f"[Instrumental] Starting outro generation for: {output_path}")
+            # Sequential processing: wait for _append_outro_async to finish
+            # We use a custom event or just let it finish since it updates the job
+            _append_outro_async(
+                job_id, 
+                output_path, 
+                outro_path, 
+                bg_color=bg_rgb, 
+                bg_image_path=bg_image_path, 
+                font_name=font_name, 
+                font_size=fontsize or 70, 
+                outro_text=outro_text,
+                is_instrumental=True, # Signal it's for instrumental
+                files_to_keep=files_to_keep
+            )
+            
+            # The _append_outro_async will update jobs[job_id]["instrumental_video"] if is_instrumental is True
+            # Let's verify if the file was created
+            inst_final = output_path.replace(".mp4", "_final.mp4")
+            if os.path.exists(inst_final):
+                output_path = inst_final
+                print(f"[Instrumental] Outro appended successfully: {output_path}")
+            else:
+                print(f"[Instrumental] Outro appending failed or skipped for {output_path}")
+        else:
+            # No outro for instrumental
+            pass
 
+        # Final keep list update and job status update
+        if output_path and os.path.exists(output_path):
+            if files_to_keep is not None and output_path not in files_to_keep:
+                files_to_keep.append(output_path)
+            
             jobs[job_id]["instrumental_video"] = output_path
             rel_inst = os.path.relpath(output_path, OUTPUT_DIR).replace("\\", "/")
             jobs[job_id]["instrumental_video_url"] = f"/outputs/{rel_inst}"
             print(f"Instrumental variant completed: {output_path}")
 
-            # Cleanup after all variants are done
-            if session_dir and files_to_keep:
-                if output_path not in files_to_keep:
-                    files_to_keep.append(output_path)
-                
-                # Simple helper to check if all requested variants are done
-                def _cleanup_session(s_dir, keep_files):
-                    try:
-                        import time
-                        time.sleep(3) # Wait a bit longer for all threads
-                        for f in os.listdir(s_dir):
-                            f_path = os.path.join(s_dir, f)
-                            if os.path.isfile(f_path) and f_path not in keep_files:
-                                if not f.endswith('.log') and not f.endswith('.json'):
-                                    try:
-                                        os.remove(f_path)
-                                    except: pass
-                    except: pass
-                
-                _cleanup_session(session_dir, files_to_keep)
-
     except Exception as e:
         print(f"Instrumental variant failed: {e}")
+    finally:
+        # If we didn't call _append_outro_async (which handles its own _mark_task_complete),
+        # we must mark it complete here.
+        if not (outro_path and os.path.exists(outro_path)):
+            try:
+                _mark_task_complete(job_id, session_dir, files_to_keep)
+            except:
+                pass
 
 def process_job_old(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, outro_text=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
     pass
