@@ -1,7 +1,8 @@
 // Desktop Renderer Process Script
 // Enhanced version of the web frontend for desktop use
 
-let currentAudioFile = null;
+let currentMediaFile = null;
+let currentBgImageFile = null;
 let currentLyrics = '';
 let audioContext = null;
 let audioBuffer = null;
@@ -11,6 +12,13 @@ let startTime = 0;
 let pauseTime = 0;
 let animationId = null;
 let jobId = null;
+let uploadedFiles = {
+    audio: null,
+    video: null,
+    is_video: false,
+    lyrics: null,
+    background: null
+};
 
 // Initialize desktop app
 document.addEventListener('DOMContentLoaded', () => {
@@ -64,14 +72,74 @@ function setupDesktopFeatures() {
 }
 
 function initializeEventListeners() {
+    // Media Type Switcher
+    const mediaTypeAudio = document.getElementById('mediaTypeAudio');
+    const mediaTypeVideo = document.getElementById('mediaTypeVideo');
+    const mediaFileLabel = document.getElementById('mediaFileLabel');
+    const chooseFileBtn = document.getElementById('chooseFileBtn');
+    const dropAreaText = document.getElementById('dropAreaText');
+    const backgroundSection = document.getElementById('backgroundSection');
+
+    function updateMediaMode() {
+        const isVideo = mediaTypeVideo.checked;
+        
+        // Reset current media when switching modes
+        currentMediaFile = null;
+        document.getElementById('audioFileInfo').textContent = 'No file selected';
+        document.getElementById('audioFile').value = '';
+        
+        const videoPlayer = document.getElementById('videoPlayer');
+        videoPlayer.pause();
+        videoPlayer.src = '';
+        videoPlayer.style.display = 'none';
+        document.getElementById('placeholder').style.display = 'block';
+        document.getElementById('videoControls').style.display = 'none';
+        document.getElementById('lyricsOverlay').style.display = 'none';
+
+        if (isVideo) {
+            mediaFileLabel.textContent = 'Select Video File';
+            chooseFileBtn.textContent = 'Choose Video File';
+            dropAreaText.textContent = '📁 Or drag and drop video files here';
+            backgroundSection.classList.add('hidden');
+        } else {
+            mediaFileLabel.textContent = 'Select Audio File';
+            chooseFileBtn.textContent = 'Choose Audio File';
+            dropAreaText.textContent = '📁 Or drag and drop audio files here';
+            backgroundSection.classList.remove('hidden');
+        }
+    }
+
+    mediaTypeAudio.addEventListener('change', updateMediaMode);
+    mediaTypeVideo.addEventListener('change', updateMediaMode);
+
+    // Background Type Selection
+    const bgTypeColor = document.getElementById('bgTypeColor');
+    const bgTypeImage = document.getElementById('bgTypeImage');
+    const bgColorGroup = document.getElementById('bgColorGroup');
+    const bgImageGroup = document.getElementById('bgImageGroup');
+
+    function updateBgVisibility() {
+        if (bgTypeImage.checked) {
+            bgImageGroup.classList.remove('hidden');
+            bgColorGroup.classList.add('hidden');
+        } else {
+            bgImageGroup.classList.add('hidden');
+            bgColorGroup.classList.remove('hidden');
+        }
+    }
+
+    bgTypeColor.addEventListener('change', updateBgVisibility);
+    bgTypeImage.addEventListener('change', updateBgVisibility);
+
     // File input listeners
     const audioFileInput = document.getElementById('audioFile');
-    
+    const bgImageFileInput = document.getElementById('bgImageFile');
     const lyricsInput = document.getElementById('lyricsInput');
     const generateBtn = document.getElementById('generateBtn');
     const previewBtn = document.getElementById('previewBtn');
     
-    audioFileInput.addEventListener('change', (e) => handleFileSelect(e, 'audio'));
+    audioFileInput.addEventListener('change', (e) => handleFileSelect(e, mediaTypeVideo.checked ? 'video' : 'audio'));
+    bgImageFileInput.addEventListener('change', (e) => handleFileSelect(e, 'image'));
     
     lyricsInput.addEventListener('input', (e) => {
         currentLyrics = e.target.value;
@@ -96,11 +164,16 @@ function initializeEventListeners() {
         videoPlayer.addEventListener('loadedmetadata', () => {
             updateTimeDisplay();
         });
+        videoPlayer.addEventListener('error', (e) => {
+            console.error("Video player error:", e);
+            showMessage("Failed to load video. Check format or file path.", "error");
+        });
     }
 }
 
 function setupDragAndDrop() {
     const audioDropArea = document.getElementById('audioDropArea');
+    const mediaTypeVideo = document.getElementById('mediaTypeVideo');
     
     [audioDropArea].forEach(area => {
         area.addEventListener('dragover', (e) => {
@@ -117,7 +190,7 @@ function setupDragAndDrop() {
             area.classList.remove('dragover');
             
             const files = Array.from(e.dataTransfer.files);
-            const type = 'audio';
+            const type = mediaTypeVideo.checked ? 'video' : 'audio';
             const validFiles = files.filter(file => validateFile(file, type));
             
             if (validFiles.length > 0) {
@@ -129,22 +202,27 @@ function setupDragAndDrop() {
 
 function validateFile(file, type) {
     const validTypes = {
-        audio: ['audio/mpeg', 'audio/wav', 'audio/mp4', 'audio/flac', 'audio/x-wav']
+        audio: ['audio/mpeg', 'audio/wav', 'audio/mp4', 'audio/flac', 'audio/x-wav', 'audio/aac', 'audio/ogg', 'audio/opus'],
+        video: ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska', 'video/webm'],
+        image: ['image/png', 'image/jpeg', 'image/jpg']
     };
     
     const extensions = {
-        audio: ['mp3', 'wav', 'm4a', 'flac']
+        audio: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg', 'opus', 'wma', 'aiff', 'aif'],
+        video: ['mp4', 'mov', 'avi', 'mkv', 'webm'],
+        image: ['png', 'jpg', 'jpeg']
     };
     
-    const fileExtension = file.name.split('.').pop().toLowerCase();
-    const isValidType = validTypes.audio.includes(file.type) || extensions.audio.includes(fileExtension);
+    const fileExtension = (file.name.split('.').pop() || '').toLowerCase();
+    const isValidType = (validTypes[type] && validTypes[type].includes(file.type)) || 
+                       (extensions[type] && extensions[type].includes(fileExtension));
     
     if (!isValidType) {
         showMessage(`Invalid ${type} file format`, 'error');
         return false;
     }
     
-    const maxSize = 100 * 1024 * 1024; // 100MB for audio
+    const maxSize = type === 'video' ? 200 * 1024 * 1024 : (type === 'audio' ? 100 * 1024 * 1024 : 30 * 1024 * 1024);
     if (file.size > maxSize) {
         showMessage(`${type} file too large. Maximum size: ${maxSize / (1024 * 1024)}MB`, 'error');
         return false;
@@ -163,10 +241,39 @@ function handleFileSelect(event, type) {
 function handleFile(file, type) {
     if (!validateFile(file, type)) return;
     
-    if (type === 'audio') {
-        currentAudioFile = file;
+    if (type === 'audio' || type === 'video') {
+        currentMediaFile = file;
         document.getElementById('audioFileInfo').textContent = `${file.name} (${formatFileSize(file.size)})`;
-        loadAudioFile(file);
+        
+        const videoPlayer = document.getElementById('videoPlayer');
+        const placeholder = document.getElementById('placeholder');
+        const videoControls = document.getElementById('videoControls');
+        const overlay = document.getElementById('lyricsOverlay');
+        
+        // Clean up old URL if exists
+        if (videoPlayer.src && videoPlayer.src.startsWith('blob:')) {
+            URL.revokeObjectURL(videoPlayer.src);
+        }
+        
+        const mediaUrl = URL.createObjectURL(file);
+        videoPlayer.src = mediaUrl;
+        videoPlayer.style.display = 'block';
+        placeholder.style.display = 'none';
+        videoControls.style.display = 'flex';
+        overlay.style.display = 'block';
+        
+        if (type === 'audio') {
+            loadAudioFile(file);
+        } else {
+            // Auto-play video
+            videoPlayer.play().catch(err => {
+                console.log("Auto-play blocked or failed:", err);
+                showMessage("Video loaded. Click play to start.", "info");
+            });
+        }
+    } else if (type === 'image') {
+        currentBgImageFile = file;
+        document.getElementById('bgImageFileInfo').textContent = `${file.name} (${formatFileSize(file.size)})`;
     }
     
     updatePreview();
@@ -213,15 +320,20 @@ function loadAudioFile(file) {
 }
 
 async function generateVideo() {
-    if (!currentAudioFile || !currentLyrics.trim()) {
-        showMessage('Please provide both audio file and lyrics', 'error');
+    if (!currentMediaFile || !currentLyrics.trim()) {
+        const type = document.getElementById('mediaTypeVideo').checked ? 'video' : 'audio';
+        showMessage(`Please provide both ${type} file and lyrics`, 'error');
         return;
     }
     
+    const isVideo = document.getElementById('mediaTypeVideo').checked;
     const formData = new FormData();
-    formData.append('audio', currentAudioFile);
+    formData.append(isVideo ? 'video' : 'audio', currentMediaFile);
+    formData.append('lyrics', new Blob([currentLyrics], { type: 'text/plain' }), 'lyrics.txt');
     
-    formData.append('lyrics', currentLyrics);
+    if (!isVideo && document.getElementById('bgTypeImage').checked && currentBgImageFile) {
+        formData.append('background', currentBgImageFile);
+    }
     
     showProgress(0, 'Uploading files...');
     
@@ -233,25 +345,44 @@ async function generateVideo() {
         });
         
         if (!uploadResponse.ok) {
-            throw new Error('Upload failed');
+            const errData = await uploadResponse.json();
+            throw new Error(errData.error || 'Upload failed');
         }
         
         const uploadData = await uploadResponse.json();
-        jobId = uploadData.job_id;
+        uploadedFiles.audio = uploadData.audio_path;
+        uploadedFiles.video = uploadData.video_path;
+        uploadedFiles.is_video = !!uploadData.is_video;
+        uploadedFiles.lyrics = uploadData.lyrics_path;
+        uploadedFiles.background = uploadData.background_path;
         
         // Start generation
         showProgress(10, 'Generating synchronized lyrics...');
+        const payload = {
+            audio_path: uploadedFiles.audio,
+            video_path: uploadedFiles.video,
+            lyrics_path: uploadedFiles.lyrics,
+            bg_image: uploadedFiles.background,
+            bg_color: document.getElementById('bgColor').value,
+            font: 'Arial', // Default font for desktop for now
+            fontsize: 70
+        };
+        
         const generateResponse = await fetch('http://localhost:5000/generate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ job_id: jobId })
+            body: JSON.stringify(payload)
         });
         
         if (!generateResponse.ok) {
-            throw new Error('Generation failed');
+            const errData = await generateResponse.json();
+            throw new Error(errData.error || 'Generation failed');
         }
+        
+        const genData = await generateResponse.json();
+        jobId = genData.job_id;
         
         // Poll for status
         await pollJobStatus();
@@ -463,14 +594,24 @@ function showMessage(message, type) {
 }
 
 function resetProject() {
-    currentAudioFile = null;
+    currentMediaFile = null;
+    currentBgImageFile = null;
     currentLyrics = '';
     alignmentData = null;
     jobId = null;
+    uploadedFiles = {
+        audio: null,
+        video: null,
+        is_video: false,
+        lyrics: null,
+        background: null
+    };
     
     document.getElementById('audioFile').value = '';
+    document.getElementById('bgImageFile').value = '';
     document.getElementById('lyricsInput').value = '';
     document.getElementById('audioFileInfo').textContent = 'No file selected';
+    document.getElementById('bgImageFileInfo').textContent = 'No file selected';
     
     const videoPlayer = document.getElementById('videoPlayer');
     videoPlayer.src = '';

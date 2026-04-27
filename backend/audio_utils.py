@@ -12,6 +12,35 @@ except Exception:
 
 # Resolve ffmpeg/ffprobe paths robustly on Windows
 from typing import Tuple
+import threading
+
+active_processes = {}  # tid -> proc
+
+def _run_managed_subprocess(cmd, **kwargs):
+    tid = threading.get_ident()
+    check = kwargs.pop('check', False)
+    
+    proc = subprocess.Popen(cmd, **kwargs)
+    active_processes[tid] = proc
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        if tid in active_processes:
+            del active_processes[tid]
+            
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+def kill_active_process(tid):
+    proc = active_processes.get(tid)
+    if proc:
+        try:
+            proc.kill()
+            return True
+        except Exception:
+            pass
+    return False
 
 def _resolve_ffmpeg_tools(config_ffmpeg: str) -> Tuple[str, str]:
     candidates = []
@@ -118,7 +147,7 @@ def convert_to_wav(input_path, output_path):
     ]
     
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _run_managed_subprocess(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         print("Conversion complete")
         return True
     except subprocess.CalledProcessError as e:
@@ -204,24 +233,23 @@ def separate_stems(input_path, output_dir=None, prefer='auto'):
             try:
                 cmd = [sp, 'separate', '-p', 'spleeter:2stems', '-o', stem_root, input_path]
                 print(f"Running Spleeter: {' '.join(cmd)}")
-                proc = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                proc = _run_managed_subprocess(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 vocals = os.path.join(stem_root, base_name, 'vocals.wav')
                 accomp = os.path.join(stem_root, base_name, 'accompaniment.wav')
                 if os.path.exists(vocals) and os.path.exists(accomp):
                     return vocals, accomp, 'spleeter'
-            except Exception as e:
+            except subprocess.CalledProcessError as e:
                 try:
-                    emsg = ''
-                    if hasattr(e, 'stderr') and isinstance(e.stderr, (bytes, str)):
-                        emsg = e.stderr.decode('utf-8', errors='ignore') if isinstance(e.stderr, bytes) else e.stderr
-                    else:
-                        emsg = str(e)
+                    emsg = e.stderr.decode('utf-8', errors='ignore') if isinstance(e.stderr, bytes) else str(e.stderr or '')
                     if ('cannot import name' in emsg) and ('click.termui' in emsg):
                         print("Spleeter CLI appears broken due to Click/Typer mismatch; skipping Spleeter.")
                     else:
                         print(f"Spleeter separation failed: {e}")
                 except Exception:
                     print(f"Spleeter separation failed: {e}")
+                return None, None, None
+            except Exception as e:
+                print(f"Spleeter separation failed: {e}")
                 return None, None, None
 
         def _try_demucs() -> tuple:
@@ -231,7 +259,7 @@ def separate_stems(input_path, output_dir=None, prefer='auto'):
             try:
                 cmd = [dm, '--two-stems', 'vocals', '-o', stem_root, input_path]
                 print(f"Running Demucs: {' '.join(cmd)}")
-                subprocess.run(cmd, check=True)
+                _run_managed_subprocess(cmd, check=True)
                 # Search for typical output filenames
                 vocals, instrumental = None, None
                 for root, dirs, files in os.walk(stem_root):
@@ -272,7 +300,7 @@ def separate_stems(input_path, output_dir=None, prefer='auto'):
                     cmd1 = [ff, '-y', '-i', input_path,
                             '-ar', '44100', '-ac', '1',
                             vocals_out]
-                subprocess.run(cmd1, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                _run_managed_subprocess(cmd1, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except Exception as e:
                 print(f"FFmpeg vocals fallback failed: {e}")
                 vocals_out = None
@@ -287,7 +315,7 @@ def separate_stems(input_path, output_dir=None, prefer='auto'):
                     cmd2 = [ff, '-y', '-i', input_path,
                             '-ar', '44100', '-ac', '2',
                             instrumental_out]
-                subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                _run_managed_subprocess(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except Exception as e:
                 print(f"FFmpeg instrumental fallback failed: {e}")
                 instrumental_out = None
@@ -464,6 +492,27 @@ def export_alignment_formats(alignment_path, lrc_out_path=None, srt_out_path=Non
     except Exception as e:
         print(f"Export alignment formats failed: {e}")
         return None, None
+
+def extract_audio_from_video(video_path, audio_path):
+    """
+    Extract audio from a video file and save it as a WAV.
+    """
+    try:
+        from backend.config import FFMPEG_PATH
+        cmd = [
+            FFMPEG_PATH, '-y',
+            '-i', video_path,
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',
+            '-ar', '44100',
+            '-ac', '2',
+            audio_path
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return audio_path
+    except Exception as e:
+        print(f"Error extracting audio from video: {e}")
+        return None
 
 def syllabify_word(word):
     try:
@@ -900,7 +949,7 @@ def mix_audio_tracks(tracks, output_path=None, sample_rate=44100, normalize=Fals
                 amix = f"amix=inputs={len(tracks)}:duration=longest:normalize={'1' if normalize else '0'}"
                 args += ['-filter_complex', amix, '-ar', str(int(sample_rate)), output_path]
                 print(f"Running FFmpeg amix: {' '.join(args[:8])} ...")
-                subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                _run_managed_subprocess(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 if os.path.exists(output_path):
                     return output_path
             except Exception as e:
@@ -1000,7 +1049,7 @@ def detect_vocal_onset(
             '-f', 'null', '-'
         ]
 
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = _run_managed_subprocess(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         log = proc.stderr or ''
 
         # Parse all candidate silence_end events
@@ -1069,7 +1118,7 @@ def detect_silence_segments(
             '-af', filtergraph,
             '-f', 'null', '-'
         ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = _run_managed_subprocess(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         log = proc.stderr or ''
 
         segments = []

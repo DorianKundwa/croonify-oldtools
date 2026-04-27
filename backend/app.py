@@ -48,9 +48,16 @@ try:
         detect_vocal_segments_from_stem,
         compute_separation_quality,
         detect_breaks_and_pauses,
+        extract_audio_from_video,
     )
-    from backend.alignment_aeneas import align
-    from backend.video_builder import build_lyric_video, generate_thumbnail_image, _find_font_path
+    from backend.alignment_hybrid import align
+    from backend.video_builder import (
+        build_lyric_video, 
+        generate_thumbnail_image, 
+        _find_font_path,
+        extract_video_thumbnail,
+        add_metadata,
+    )
 except Exception:
     from config import (
         UPLOAD_DIR,
@@ -89,12 +96,27 @@ except Exception:
         detect_vocal_segments_from_stem,
         compute_separation_quality,
         detect_breaks_and_pauses,
+        extract_audio_from_video,
     )
-    from alignment_aeneas import align
-    from video_builder import build_lyric_video, generate_thumbnail_image, _find_font_path
+    from alignment_hybrid import align
+    from video_builder import (
+        build_lyric_video, 
+        generate_thumbnail_image, 
+        _find_font_path,
+        extract_video_thumbnail,
+        add_metadata,
+    )
 
 # Job management
-jobs = {}  # Dictionary to store job status: {job_id: {"status": "queued|running|done", "output": None}}
+jobs = {}  # Dictionary to store job status: {job_id: {"status": "queued|running|done|cancelled", "output": None}}
+
+class _JobCancelledError(Exception):
+    """Raised internally when a job is cancelled mid-flight."""
+
+def _check_cancelled(job_id):
+    """Raise _JobCancelledError if the job has been cancelled."""
+    if jobs.get(job_id, {}).get('cancelled'):
+        raise _JobCancelledError(f"Job {job_id} was cancelled by the user")
 
 def update_job_progress(job_id, progress):
     """Update job progress percentage"""
@@ -372,6 +394,79 @@ def _reencode_append_video_preserve_outro(base_video_path, outro_video_path, fin
         print(f"Re-encode concat failed: {e2}")
         return False
 
+def _ffmpeg_chromakey_overlay(original_video_path, lyrics_video_path, output_path):
+    """Composite a lyric video over the original video using FFmpeg.
+    
+    This implementation uses the 'screen' blend mode, which is extremely robust
+    for white text on a black background (Luma Key / Screen Blend).
+    """
+    out_w   = int(os.environ.get('CROONIFY_WIDTH',  1920))
+    out_h   = int(os.environ.get('CROONIFY_HEIGHT', 1080))
+    fps     = 24
+    encoder = FFMPEG_ENCODER or 'libx264'
+    preset  = FFMPEG_PRESET  or 'ultrafast'
+    crf     = str(FFMPEG_CRF if FFMPEG_CRF else 18)
+    threads = str(FFMPEG_THREADS if FFMPEG_THREADS is not None else 0)
+
+    # Audio mapping logic:
+    # We prioritize the lyric video's audio (1:a) but use '?' to make it optional.
+    # We also include -shortest to ensure the output ends when the audio ends.
+    common_tail = [
+        '-map', '[v]', '-map', '1:a?',
+        '-c:v', encoder, '-preset', str(preset), '-crf', crf,
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '192k',
+        '-threads', threads,
+        '-movflags', 'faststart',
+        '-shortest',
+        output_path,
+    ]
+
+    # ── STAGE 1: Screen Blend (Primary) ────────────────────────────────────
+    # Since we now render lyrics on BLACK background for video mode, 
+    # screen blend is the perfect way to composite.
+    fc_screen = (
+        f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[bg];"
+        f"[1:v]scale={out_w}:{out_h},setsar=1,fps={fps}[fg];"
+        f"[bg][fg]blend=all_mode=screen:all_opacity=1[v]"
+    )
+    try:
+        cmd_screen = [
+            FFMPEG_PATH, '-y',
+            '-i', original_video_path,
+            '-i', lyrics_video_path,
+            '-filter_complex', fc_screen,
+        ] + common_tail
+        subprocess.run(cmd_screen, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print('[_ffmpeg_composite] Screen blend composite succeeded.')
+        return True
+    except Exception as e_screen:
+        print(f'[_ffmpeg_composite] Screen blend failed ({e_screen}); trying colorkey fallback.')
+
+    # ── STAGE 2: Colorkey Fallback ─────────────────────────────────────────
+    # If blend fails, try a simple colorkey on black.
+    fc_ck = (
+        f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
+        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[bg];"
+        f"[1:v]scale={out_w}:{out_h},setsar=1,fps={fps},colorkey=0x000000:0.1:0.1[fg];"
+        f"[bg][fg]overlay=format=auto[v]"
+    )
+    try:
+        cmd_ck = [
+            FFMPEG_PATH, '-y',
+            '-i', original_video_path,
+            '-i', lyrics_video_path,
+            '-filter_complex', fc_ck,
+        ] + common_tail
+        subprocess.run(cmd_ck, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print('[_ffmpeg_composite] Colorkey composite succeeded.')
+        return True
+    except Exception as e_ck:
+        print(f'[_ffmpeg_composite] All composite methods failed. Last error: {e_ck}')
+        return False
+
+
 @app.route('/', methods=['GET'])
 def index():
     return "Dorian Lyrics Maker API v1"
@@ -406,23 +501,36 @@ def serve_alignment(filename):
 def upload_file():
     if request.method == 'OPTIONS':
         return ('', 204)
-    if 'audio' not in request.files:
-        return jsonify({'error': 'Missing audio file'}), 400
     
-    audio_file = request.files['audio']
+    # Primary media can be 'audio' or 'video'
+    audio_file = request.files.get('audio')
+    video_file = request.files.get('video')
+    
+    if not audio_file and not video_file:
+        return jsonify({'error': 'Missing audio or video file'}), 400
+    
     lyrics_file = request.files.get('lyrics')
     outro_file = request.files.get('outro')
     bg_file = request.files.get('background')
     
-    # Check audio validity
-    if audio_file.filename == '':
-        return jsonify({'error': 'No audio file selected'}), 400
+    # Check media validity
+    media_file = video_file if video_file else audio_file
+    if media_file.filename == '':
+        return jsonify({'error': 'No media file selected'}), 400
     
-    # Check audio file extension
-    audio_ext = os.path.splitext(audio_file.filename)[1].lower()
-    allowed_exts = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.mov', '.opus']
-    if audio_ext not in allowed_exts:
-        return jsonify({'error': 'Audio file must be one of: MP3, WAV, M4A, AAC, FLAC, OGG, WMA, AIFF, MP4, WEBM, OPUS'}), 400
+    # Check file extension
+    media_ext = os.path.splitext(media_file.filename)[1].lower()
+    allowed_audio = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.mov', '.opus']
+    allowed_video = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
+    
+    is_video = False
+    if video_file:
+        if media_ext not in allowed_video:
+            return jsonify({'error': 'Video file must be one of: MP4, MOV, AVI, MKV, WEBM'}), 400
+        is_video = True
+    else:
+        if media_ext not in allowed_audio:
+            return jsonify({'error': 'Audio file must be one of: MP3, WAV, M4A, AAC, FLAC, OGG, WMA, AIFF, MP4, WEBM, OPUS'}), 400
     
     # If lyrics file provided, check extension
     if lyrics_file and lyrics_file.filename:
@@ -433,19 +541,19 @@ def upload_file():
     # If outro audio provided, check extension
     if outro_file and outro_file.filename:
         outro_ext = os.path.splitext(outro_file.filename)[1].lower()
-        allowed_exts = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma', '.aiff', '.aif', '.mp4', '.webm', '.mov', '.opus']
-        if outro_ext not in allowed_exts:
-            return jsonify({'error': 'Outro audio must be one of: MP3, WAV, M4A, AAC, FLAC, OGG, WMA, AIFF, MP4, WEBM, OPUS'}), 400
+        if outro_ext not in allowed_audio:
+            return jsonify({'error': 'Outro audio must be a valid audio format'}), 400
     
     # Generate timestamp for unique filenames
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Save audio file
-    audio_filename = f"{timestamp}_audio{audio_ext}"
-    audio_path = os.path.join(UPLOAD_DIR, audio_filename)
-    audio_file.save(audio_path)
+    # Save media file
+    media_type = "video" if is_video else "audio"
+    media_filename = f"{timestamp}_{media_type}{media_ext}"
+    media_path = os.path.join(UPLOAD_DIR, media_filename)
+    media_file.save(media_path)
     
-    # Save lyrics file if provided, else rely on typed lyrics from form
+    # Save lyrics file if provided
     lyrics_path = None
     if lyrics_file and lyrics_file.filename:
         lyrics_filename = f"{timestamp}_lyrics{os.path.splitext(lyrics_file.filename)[1].lower()}"
@@ -472,10 +580,12 @@ def upload_file():
     
     return jsonify({
         'success': True,
-        'audio_path': audio_path,
+        'audio_path': media_path if not is_video else None,
+        'video_path': media_path if is_video else None,
         'lyrics_path': lyrics_path,
         'outro_path': outro_path,
-        'background_path': background_path
+        'background_path': background_path,
+        'is_video': is_video
     })
 
 def _append_outro_async(job_id, base_video_path, outro_path, bg_color=None, bg_image_path=None, font_name=None, font_size=None, outro_text=None):
@@ -972,7 +1082,7 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
         except Exception:
             pass
         try:
-            if 'instrument_segment' in locals() and instrument_segment and os.path.exists(instrument_segment):
+            if 'instrument_segment' in locals() and instrument_segment and os.path.exists(instrumental_path):
                 if final_path != instrument_segment:
                     os.remove(instrument_segment)
             if 'outro_segment' in locals() and outro_segment and os.path.exists(outro_segment):
@@ -985,14 +1095,49 @@ def _render_instrument_video_async(job_id, instrumental_path, bg_color=None, bg_
         pass
 
 
-def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, outro_text=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
+def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, outro_text=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None, video_path=None):
     """Background thread function to process a job"""
     try:
+        # Register thread ID so we can aggressively kill its spawned subprocesses if cancelled
+        jobs[job_id]["thread_id"] = threading.get_ident()
+        
         # Update job status
         jobs[job_id]["status"] = "running"
         jobs[job_id]["progress"] = 0
         jobs[job_id]["stage"] = "Starting job"
-        
+
+        _check_cancelled(job_id)
+
+        # Handle video input if provided
+        is_video_mode = False
+        video_bg_path = None
+        if video_path and os.path.exists(video_path):
+            is_video_mode = True
+            jobs[job_id]["stage"] = "Processing video input"
+            jobs[job_id]["progress"] = 5
+            base_name = os.path.splitext(os.path.basename(video_path))[0]
+            
+            # Extract audio
+            extracted_audio = os.path.join(UPLOAD_DIR, f"{base_name}_extracted.wav")
+            if extract_audio_from_video(video_path, extracted_audio):
+                audio_path = extracted_audio
+            else:
+                jobs[job_id]["status"] = "error"
+                jobs[job_id]["error"] = "Failed to extract audio from video file."
+                return
+            
+            # Extract first frame to use as background
+            extracted_frame = os.path.join(UPLOAD_DIR, f"{base_name}_frame.png")
+            if extract_video_thumbnail(video_path, extracted_frame):
+                bg_image_path = extracted_frame
+                # We can still use the video as background if we want moving background,
+                # but the prompt specifically asked to use the extracted frame as background image.
+                # To be safe and provide the best of both worlds, we'll use the video as background
+                # in the builder, but the extracted frame is now our "background image".
+                video_bg_path = video_path
+            else:
+                print("Warning: Failed to extract frame from video.")
+
         jobs[job_id]["stage"] = "Normalizing audio"
         jobs[job_id]["progress"] = 10
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
@@ -1002,6 +1147,7 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             wav_path = nw if nw and os.path.exists(nw) else norm_wav
         except Exception:
             wav_path = norm_wav
+        
         jobs[job_id]["stage"] = "Converting audio to WAV"
         jobs[job_id]["progress"] = 20
         # Already exporting normalized to WAV; ensure extension is WAV
@@ -1015,6 +1161,8 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 )
                 return
             wav_path = target_wav
+
+        _check_cancelled(job_id)
 
         vocals_path, instrumental_path = None, None
         pref = str(separation_prefer or 'auto').lower()
@@ -1035,7 +1183,9 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         if stem_engine:
             jobs[job_id]["stem_engine"] = stem_engine
 
-        # Step 3: Align full-mix audio with lyrics using Aeneas
+        _check_cancelled(job_id)
+
+        # Step 3: Align audio with lyrics
         jobs[job_id]["stage"] = "Aligning audio with lyrics"
         jobs[job_id]["progress"] = 40
         alignment_path = os.path.join(ALIGN_DIR, f"{base_name}_alignment.json")
@@ -1046,7 +1196,7 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
                 import os as _os
                 ext = _os.path.splitext(lyrics_path or '')[1].lower()
                 if ext == '.lrc':
-                    from backend.alignment_aeneas import lrc_to_alignment
+                    from backend.alignment_hybrid import lrc_to_alignment
                     src_for_align = vocals_path if (vocals_path and os.path.exists(vocals_path)) else wav_path
                     outp = lrc_to_alignment(src_for_align, lyrics_path, alignment_path, language)
                     if outp:
@@ -1067,26 +1217,9 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             jobs[job_id]["error"] = f"Alignment error: {e}"
             return
 
-        # No cross-correlation shifting; use raw alignment times
+        _check_cancelled(job_id)
 
-        try:
-            if bool(sync_refine):
-                rp = refine_word_alignment(vocals_path or wav_path, alignment_path)
-                if rp and os.path.exists(rp):
-                    alignment_path = rp
-                    jobs[job_id]["alignment"] = alignment_path
-                    rel_align = os.path.relpath(alignment_path, ALIGN_DIR).replace("\\", "/")
-                    jobs[job_id]["alignment_url"] = f"/alignments/{rel_align}"
-                sp = refine_syllable_alignment(alignment_path, os.path.join(ALIGN_DIR, f"{base_name}_alignment_syllables.json"), syllable_offset_ms=0.0)
-                if sp and os.path.exists(sp):
-                    alignment_path = sp
-                    jobs[job_id]["alignment"] = alignment_path
-                    rel_align = os.path.relpath(alignment_path, ALIGN_DIR).replace("\\", "/")
-                    jobs[job_id]["alignment_url"] = f"/alignments/{rel_align}"
-        except Exception:
-            pass
-
-        # Create per-session output directory named "song_artist" (sanitized)
+        # Create per-session output directory
         session_comp = None
         try:
             st = (song_title or "").strip()
@@ -1099,67 +1232,41 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         session_dir = os.path.join(OUTPUT_DIR, session_name)
         os.makedirs(session_dir, exist_ok=True)
 
-        main_vocal_onset = None
-        try:
-            main_vocal_onset = detect_main_vocal_onset_from_alignment(alignment_path)
-        except Exception:
-            main_vocal_onset = None
-        audio_vocal_onset = None
-        try:
-            onset_src = vocals_path if (vocals_path and os.path.exists(vocals_path)) else wav_path
-            audio_vocal_onset = detect_vocal_onset(onset_src)
-        except Exception:
-            audio_vocal_onset = None
-        try:
-            jobs[job_id]["main_vocal_onset"] = main_vocal_onset
-            jobs[job_id]["audio_vocal_onset"] = audio_vocal_onset
-        except Exception:
-            pass
-
-        # No onset-based shifting; display times exactly as in JSON
-
-        # Step 3.5: Prepare final audio (use normalized full mix)
-        jobs[job_id]["stage"] = "Preparing final mix"
-        jobs[job_id]["progress"] = 66
-        audio_final_path = wav_path
-
-        breaks = []
-        try:
-            cfg = pause_config or {}
-            thr = cfg.get('threshold_db') or '-25dB'
-            ms = cfg.get('min_silence_sec') or 0.4
-            fw = cfg.get('flux_window_sec') or 0.25
-            mp = cfg.get('min_pause_sec') or 0.2
-            breaks = detect_breaks_and_pauses(vocals_path or wav_path, noise_threshold_db=str(thr), min_silence_dur=float(ms), flux_window_sec=float(fw), min_pause_sec=float(mp))
-            try:
-                bp = os.path.join(ALIGN_DIR, f"{base_name}_breaks.json")
-                import json as _json
-                with open(bp, 'w', encoding='utf-8') as f:
-                    _json.dump({'breaks': breaks}, f, ensure_ascii=False, indent=2)
-                jobs[job_id]["breaks"] = bp
-                rel_bp = os.path.relpath(bp, ALIGN_DIR).replace("\\", "/")
-                jobs[job_id]["breaks_url"] = f"/alignments/{rel_bp}"
-            except Exception:
-                pass
-        except Exception:
-            breaks = []
-        # Step 4: Build video (use refined alignment times for lyric display)
+        # Step 4: Build video
         jobs[job_id]["stage"] = "Rendering lyric video"
         jobs[job_id]["progress"] = 70
         ext = str(output_format or 'mp4').lower()
-        if ext not in ('mp4', 'mov'):
-            ext = 'mp4'
         output_path = os.path.join(session_dir, f"{base_name}_lyrics.{ext}")
-        try:
-            print(f"Starting video render to '{output_path}' with alignment '{alignment_path}'")
-        except Exception:
-            pass
+
+        # FIX: Black screen in video mode
+        # ─────────────────────────────────────────────────────────────────────
+        # MoviePy's VideoFileClip frame reader silently produces black frames
+        # on Windows when a user video is used as a composited background
+        # (a known bug with H.264/MP4 inputs on MoviePy 1.x).
+        #
+        # Solution: build the lyric overlay on a PURE BLACK background
+        # (ColorClip — always reliable), then use _ffmpeg_blend_overlay() to
+        # composite the white-on-black lyric video over the original video via
+        # FFmpeg's "lighten" blend mode:
+        #   black pixels (bg)   → original video pixel always wins  → video shows
+        #   white pixels (text) → max(255, anything) = 255           → text shows
+        # ─────────────────────────────────────────────────────────────────────
+        if is_video_mode:
+            _build_bg_image = None            # don't pass static frame to MoviePy
+            _build_bg_color = (0, 0, 0)       # pure black (#000000) — used for "screen" blend overlay
+            _build_video_bg = None            # never pass video to MoviePy (causes black frames)
+        else:
+            _build_bg_image = bg_image_path
+            _build_bg_color = bg_color
+            _build_video_bg = None            # audio mode never uses video bg
+
         result = build_lyric_video(
-            audio_final_path,
+            wav_path,
             alignment_path,
             output_path,
-            bg_image_path,
-            bg_color,
+            _build_bg_image,
+            _build_bg_color,
+            background_video_path=_build_video_bg,
             use_highlight=False,
             progress_callback=lambda p: update_job_progress(job_id, 70 + int(max(0.0, min(1.0, p)) * 29)),
             font_name=font_name,
@@ -1169,16 +1276,33 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             vocal_onset=None,
             trim_intro=False,
             trim_end_silence=bool(outro_path),
-            pause_markers=breaks,
+            pause_markers=None,
             pause_opacity=0.22
         )
+
         if not result or not os.path.exists(output_path):
             jobs[job_id]["status"] = "error"
-            jobs[job_id]["error"] = (
-                "Video rendering failed. Verify FFmpeg is available and inputs are correct."
-            )
+            jobs[job_id]["error"] = "Video rendering failed."
             return
-        
+
+        # Step 4b (video mode only): chromakey green background, overlay lyrics on original video
+        if is_video_mode and video_path and os.path.exists(video_path):
+            jobs[job_id]["stage"] = "Compositing lyrics over video"
+            jobs[job_id]["progress"] = 97
+            composite_path = os.path.join(session_dir, f"{base_name}_composite.{ext}")
+            if _ffmpeg_chromakey_overlay(video_path, output_path, composite_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+                output_path = composite_path
+            else:
+                # All overlay methods failed — keep lyrics-on-green as last resort
+                print("[video mode] All FFmpeg overlay methods failed; keeping greenscreen fallback")
+
+        # Add metadata to the base video
+        output_path = add_metadata(output_path, os.path.join(session_dir, f"{base_name}_lyrics_meta.{ext}"), title=song_title, artist=artist_name)
+
         # Update job status
         jobs[job_id]["status"] = "done"
         jobs[job_id]["stage"] = "Completed (base video)"
@@ -1187,121 +1311,157 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         rel_output = os.path.relpath(output_path, OUTPUT_DIR).replace("\\", "/")
         jobs[job_id]["output_url"] = f"/outputs/{rel_output}"
 
-        try:
-            def _compute_analysis_async():
-                try:
-                    from backend.audio_utils import classify_vocal_segments_enhanced
-                    a = classify_vocal_segments_enhanced(wav_path, alignment_path, vocals=vocals_path, instrumental=instrumental_path)
-                    if a and isinstance(a, dict):
-                        ap = os.path.join(session_dir, f"{base_name}_vocal_analysis.json")
-                        with open(ap, 'w', encoding='utf-8') as f:
-                            import json as _json
-                            _json.dump(a, f, ensure_ascii=False, indent=2)
-                        jobs[job_id]["analysis"] = ap
-                        rel_analysis = os.path.relpath(ap, OUTPUT_DIR).replace("\\", "/")
-                        jobs[job_id]["analysis_url"] = f"/outputs/{rel_analysis}"
-                        try:
-                            jobs[job_id]["main_vocal_onset"] = a.get("main_vocal_onset")
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            t = threading.Thread(target=_compute_analysis_async)
-            t.daemon = True
-            t.start()
-        except Exception:
-            pass
+        # Cleanup intermediate files to keep only 3 main files in output folder
+        def _cleanup_session(s_dir, keep_files):
+            try:
+                for f in os.listdir(s_dir):
+                    f_path = os.path.join(s_dir, f)
+                    if os.path.isfile(f_path) and f_path not in keep_files:
+                        # Don't delete logs or the directory itself
+                        if not f.endswith('.log') and not f.endswith('.json'):
+                            os.remove(f_path)
+            except Exception as e:
+                print(f"Cleanup error: {e}")
 
-        try:
-            if vocals_path and os.path.exists(vocals_path):
-                segs = detect_vocal_segments_from_stem(vocals_path)
-                seg_path = os.path.join(ALIGN_DIR, f"{base_name}_vocal_segments.json")
-                import json as _json
-                with open(seg_path, 'w', encoding='utf-8') as f:
-                    _json.dump({'segments': segs}, f, ensure_ascii=False, indent=2)
-                jobs[job_id]["vocal_segments"] = seg_path
-                rel_segs = os.path.relpath(seg_path, ALIGN_DIR).replace("\\", "/")
-                jobs[job_id]["vocal_segments_url"] = f"/alignments/{rel_segs}"
-        except Exception:
-            pass
+        # Initial keep list
+        files_to_keep = [output_path]
 
-        try:
-            lrc_out = os.path.join(ALIGN_DIR, f"{base_name}.lrc")
-            srt_out = os.path.join(ALIGN_DIR, f"{base_name}.srt")
-            lrcp, srtp = export_alignment_formats(alignment_path, lrc_out, srt_out)
-            if lrcp:
-                jobs[job_id]["lrc"] = lrcp
-                rel_lrc = os.path.relpath(lrcp, ALIGN_DIR).replace("\\", "/")
-                jobs[job_id]["lrc_url"] = f"/alignments/{rel_lrc}"
-            if srtp:
-                jobs[job_id]["srt"] = srtp
-                rel_srt = os.path.relpath(srtp, ALIGN_DIR).replace("\\", "/")
-                jobs[job_id]["srt_url"] = f"/alignments/{rel_srt}"
-        except Exception:
-            pass
-
-        try:
-            if vocals_path and instrumental_path:
-                qc = compute_separation_quality(vocals_path, instrumental_path, wav_path)
-                qc_path = os.path.join(ALIGN_DIR, f"{base_name}_qc.json")
-                import json as _json
-                with open(qc_path, 'w', encoding='utf-8') as f:
-                    _json.dump(qc, f, ensure_ascii=False, indent=2)
-                jobs[job_id]["qc"] = qc_path
-                rel_qc = os.path.relpath(qc_path, ALIGN_DIR).replace("\\", "/")
-                jobs[job_id]["qc_url"] = f"/alignments/{rel_qc}"
-        except Exception:
-            pass
-
-        # Generate thumbnail image (uses background image or color and selected font)
+        # Generate thumbnail
         try:
             thumb_path = os.path.join(session_dir, f"{base_name}_thumbnail.png")
-            base_fs = int(fontsize or 70)
-            # Larger multipliers per request: title ≈ 6.5×, artist ≈ 2.5×
-            title_fs = int(base_fs * 6.5)
-            artist_fs = max(32, int(base_fs * 2.5))
-            generated = generate_thumbnail_image(
-                title=song_title or os.path.splitext(os.path.basename(lyrics_path or ''))[0],
-                artist=artist_name or '',
-                out_path=thumb_path,
-                bg_color=bg_color,
-                image_path=bg_image_path,
-                font_name=font_name,
-                title_fontsize=title_fs,
-                artist_fontsize=artist_fs,
-            )
-            if generated:
+            if is_video_mode:
+                extract_video_thumbnail(video_path, thumb_path, title=song_title, artist=artist_name, font_name=font_name)
+            else:
+                generate_thumbnail_image(
+                    title=song_title or os.path.splitext(os.path.basename(lyrics_path or ''))[0],
+                    artist=artist_name or '',
+                    out_path=thumb_path,
+                    bg_color=bg_color,
+                    image_path=bg_image_path,
+                    font_name=font_name,
+                )
+            if os.path.exists(thumb_path):
                 jobs[job_id]["thumbnail"] = thumb_path
+                files_to_keep.append(thumb_path)
                 rel_thumb = os.path.relpath(thumb_path, OUTPUT_DIR).replace("\\", "/")
                 jobs[job_id]["thumbnail_url"] = f"/outputs/{rel_thumb}"
         except Exception as e:
             print(f"Thumbnail generation error: {e}")
 
-        # Kick off post-processing to append outro without blocking main completion
+        # Variants generation
         try:
-            jobs[job_id]["postprocess"] = "appending_outro" if outro_path else None
-            if outro_path and bool(outro_is_video):
-                t = threading.Thread(target=_append_outro_video_async, args=(job_id, output_path, outro_path))
-                t.daemon = True
-                t.start()
-            elif outro_path:
-                t = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text))
-                t.daemon = True
-                t.start()
+            # Outro variant
+            if outro_path:
+                jobs[job_id]["postprocess"] = "generating_variants"
+                t_outro = threading.Thread(target=_append_outro_async, args=(job_id, output_path, outro_path, bg_color, bg_image_path, font_name, fontsize or 70, outro_text))
+                t_outro.daemon = True
+                t_outro.start()
+
+            # Instrumental variant
+            if instrumental_path:
+                inst_output = os.path.join(session_dir, f"{base_name}_instrumental.{ext}")
+                t_inst = threading.Thread(target=_render_instrument_video_variant_async, args=(job_id, video_path, instrumental_path, alignment_path, inst_output, font_name, fontsize, song_title, artist_name, bg_rgb, bg_image_path, session_dir, files_to_keep))
+                t_inst.daemon = True
+                t_inst.start()
+            else:
+                # If no instrumental, cleanup immediately
+                def _cleanup_session(s_dir, keep_files):
+                    try:
+                        import time
+                        time.sleep(1)
+                        for f in os.listdir(s_dir):
+                            f_path = os.path.join(s_dir, f)
+                            if os.path.isfile(f_path) and f_path not in keep_files:
+                                if not f.endswith('.log') and not f.endswith('.json'):
+                                    try: os.remove(f_path)
+                                    except: pass
+                    except: pass
+                _cleanup_session(session_dir, files_to_keep)
         except Exception as e:
-            print(f"Failed to start outro append thread: {e}")
-        try:
-            if instrumental_path and os.path.exists(instrumental_path):
-                t2 = threading.Thread(target=_render_instrument_video_async, args=(job_id, instrumental_path, bg_color, bg_image_path, outro_path, bool(outro_is_video), session_dir, base_name, font_name, fontsize or 70, outro_text))
-                t2.daemon = True
-                t2.start()
-        except Exception:
-            pass
+            print(f"Failed to start variant threads: {e}")
         
+    except _JobCancelledError:
+        jobs[job_id]["status"] = "cancelled"
+        jobs[job_id]["stage"] = "Cancelled by user"
     except Exception as e:
-        # Update job status with error
         jobs[job_id]["status"] = "error"
         jobs[job_id]["error"] = str(e)
+
+def _render_instrument_video_variant_async(job_id, video_path, instrumental_path, alignment_path, output_path, font_name, fontsize, title, artist, bg_rgb=None, bg_image_path=None, session_dir=None, files_to_keep=None):
+    try:
+        # Step 1: Generate the lyric-on-background video (using background video or color/image)
+        # For instrumentals, we still want the same background as the main video.
+        
+        # If it's video mode, we render lyrics on BLACK first, then composite.
+        is_video_mode = bool(video_path and os.path.exists(video_path))
+        
+        _build_bg_image = None if is_video_mode else bg_image_path
+        _build_bg_color = (0, 0, 0) if is_video_mode else (bg_rgb or (0, 0, 0))
+        _build_video_bg = None # Never pass video to MoviePy
+
+        result = build_lyric_video(
+            instrumental_path,
+            alignment_path,
+            output_path,
+            _build_bg_image,
+            _build_bg_color,
+            background_video_path=_build_video_bg,
+            font_name=font_name,
+            fontsize=fontsize or 70,
+        )
+
+        if result and os.path.exists(output_path):
+            # Step 2: If video mode, composite the black-background lyrics over the background video
+            if is_video_mode:
+                composite_path = output_path.replace(".mp4", "_composite.mp4")
+                if _ffmpeg_chromakey_overlay(video_path, output_path, composite_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                    output_path = composite_path
+
+            # Step 3: Add metadata
+            final_path = add_metadata(output_path, output_path.replace(".mp4", "_final.mp4"), title=f"{title} (Instrumental)", artist=artist)
+            
+            # Cleanup intermediate meta file if created
+            if final_path != output_path and os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            
+            jobs[job_id]["instrumental_video"] = final_path
+            rel_inst = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
+            jobs[job_id]["instrumental_video_url"] = f"/outputs/{rel_inst}"
+            print(f"Instrumental variant completed: {final_path}")
+
+            # Cleanup after all variants are done
+            if session_dir and files_to_keep:
+                files_to_keep.append(final_path)
+                
+                # Simple helper to check if all requested variants are done
+                # (Main video is already done if we are here)
+                def _cleanup_session(s_dir, keep_files):
+                    try:
+                        import time
+                        time.sleep(2) # Brief wait to ensure files are closed
+                        for f in os.listdir(s_dir):
+                            f_path = os.path.join(s_dir, f)
+                            if os.path.isfile(f_path) and f_path not in keep_files:
+                                if not f.endswith('.log') and not f.endswith('.json'):
+                                    try:
+                                        os.remove(f_path)
+                                    except: pass
+                    except: pass
+                
+                _cleanup_session(session_dir, files_to_keep)
+
+    except Exception as e:
+        print(f"Instrumental variant failed: {e}")
+
+def process_job_old(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, fontsize=None, outro_path=None, outro_is_video=False, outro_text=None, song_title=None, artist_name=None, bg_image_path=None, alignment_override=None, separation_prefer='auto', output_format='mp4', pause_config=None, sync_refine=False, language=None):
+    pass
 
 # Update generate route to handle preflight
 @app.route('/generate', methods=['POST', 'OPTIONS'])
@@ -1312,10 +1472,11 @@ def generate_video():
     data = request.json
     
     # Validate request
-    if not data or 'audio_path' not in data or 'lyrics_path' not in data:
-        return jsonify({'error': 'Missing audio_path or lyrics_path'}), 400
+    if not data or ('audio_path' not in data and 'video_path' not in data) or 'lyrics_path' not in data:
+        return jsonify({'error': 'Missing audio_path/video_path or lyrics_path'}), 400
     
-    audio_path = data['audio_path']
+    audio_path = data.get('audio_path')
+    video_path = data.get('video_path')
     lyrics_path = data['lyrics_path']
     bg_color_str = data.get('bg_color')
     bg_rgb = parse_bg_color(bg_color_str) if bg_color_str else None
@@ -1334,8 +1495,11 @@ def generate_video():
     artist_name = data.get('artist_name')
     
     # Check if files exist
-    if not os.path.exists(audio_path):
+    if audio_path and not os.path.exists(audio_path):
         return jsonify({'error': f'Audio file not found: {audio_path}'}), 404
+    
+    if video_path and not os.path.exists(video_path):
+        return jsonify({'error': f'Video file not found: {video_path}'}), 404
     
     if not os.path.exists(lyrics_path):
         return jsonify({'error': f'Lyrics file not found: {lyrics_path}'}), 404
@@ -1354,7 +1518,9 @@ def generate_video():
     alignment_override = None
     try:
         if alignment_json and isinstance(alignment_json, dict):
-            base_name = os.path.splitext(os.path.basename(audio_path))[0]
+            # Use video_path if audio_path is missing
+            src_path = video_path if video_path else audio_path
+            base_name = os.path.splitext(os.path.basename(src_path))[0]
             alignment_override = os.path.join(ALIGN_DIR, f"{base_name}_alignment_provided.json")
             os.makedirs(ALIGN_DIR, exist_ok=True)
             with open(alignment_override, 'w', encoding='utf-8') as f:
@@ -1365,7 +1531,7 @@ def generate_video():
         alignment_override = None
     sep_pref = data.get('separation_engine') or data.get('separation_prefer') or 'auto'
     out_fmt = (data.get('output_format') or 'mp4').lower()
-    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, outro_is_video, outro_text, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language))
+    thread = threading.Thread(target=process_job, args=(job_id, audio_path, lyrics_path, bg_rgb, font_name, fontsize, outro_path, outro_is_video, outro_text, song_title, artist_name, bg_image_path, alignment_override, sep_pref, out_fmt, pause_config, sync_refine, language, video_path))
     thread.daemon = True
     thread.start()
     
@@ -1472,6 +1638,9 @@ def get_job_status(job_id):
             response['instrument'] = job['instrument']
             rel_inst = os.path.relpath(job['instrument'], OUTPUT_DIR).replace("\\", "/")
             response['instrument_url'] = f"/outputs/{rel_inst}"
+        if job.get('instrumental_video'):
+            response['instrumental_video'] = job['instrumental_video']
+            response['instrumental_video_url'] = job.get('instrumental_video_url')
         if job.get('stems_mix'):
             response['stems_mix'] = job['stems_mix']
         if job.get('qc'):
@@ -1484,7 +1653,35 @@ def get_job_status(job_id):
     
     return jsonify(response)
 
+@app.route('/cancel/<job_id>', methods=['POST', 'OPTIONS'])
+def cancel_job(job_id):
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    if job_id not in jobs:
+        return jsonify({'error': 'Job not found'}), 404
+    job = jobs[job_id]
+    status = job.get('status', '')
+    if status in ('done', 'error', 'cancelled'):
+        return jsonify({'job_id': job_id, 'status': status, 'message': f'Job already in terminal state: {status}'}), 200
+    job['cancelled'] = True
+    job['status'] = 'cancelled'
+    job['stage'] = 'Cancelling...'
+    print(f"[cancel_job] Requested cancellation of job {job_id}")
+    
+    # Aggressively kill any ffmpeg/spleeter/demucs processes currently blocking the thread
+    tid = job.get('thread_id')
+    if tid is not None:
+        try:
+            from backend.audio_utils import kill_active_process
+            kill_active_process(tid)
+        except Exception as e:
+            print(f"Failed to kill child processes for job {job_id}: {e}")
+            
+    return jsonify({'job_id': job_id, 'status': 'cancelled', 'message': 'Cancellation requested'}), 200
+
+
 if __name__ == '__main__':
+
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(ALIGN_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)

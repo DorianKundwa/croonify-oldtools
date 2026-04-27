@@ -73,17 +73,23 @@ if (-not $env:FFMPEG_TUNE)    { $env:FFMPEG_TUNE    = 'zerolatency' }
 if (-not $env:CROONIFY_WIDTH) { $env:CROONIFY_WIDTH = '1280' }
 if (-not $env:CROONIFY_HEIGHT){ $env:CROONIFY_HEIGHT= '720' }
 
-# Start backend server
-Write-Info 'Starting backend (Flask) on http://localhost:5000 ...'
-$env:PYTHONPATH = "$ScriptDir" + ';' + ($env:PYTHONPATH)
-$env:CROONIFY_BACKEND_PORT = '5000'
-$env:CROONIFY_FRONTEND_PORT = '5500'
-try {
-    $backend = Start-Process -FilePath $VenvPython -ArgumentList '-m','backend.app' -WorkingDirectory $ScriptDir -WindowStyle Minimized -PassThru
-} catch {
-    Write-Warn 'Module start failed, falling back to backend/app.py'
-    $backend = Start-Process -FilePath $VenvPython -ArgumentList (Join-Path $ScriptDir 'backend/app.py') -WorkingDirectory (Join-Path $ScriptDir 'backend') -WindowStyle Minimized -PassThru
+function Get-FreePort {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $port = $listener.LocalEndpoint.Port
+    $listener.Stop()
+    return $port
 }
+
+$BackendPort = Get-FreePort
+$FrontendPort = Get-FreePort
+
+# Start backend server
+Write-Info "Starting backend (Flask) on http://localhost:$BackendPort ..."
+$env:PYTHONPATH = "$ScriptDir"
+$env:CROONIFY_BACKEND_PORT = $BackendPort
+$env:CROONIFY_FRONTEND_PORT = $FrontendPort
+$backend = Start-Process -FilePath $VenvPython -ArgumentList '-m','backend.app' -WorkingDirectory $ScriptDir -WindowStyle Minimized -PassThru
 
 # Start frontend static server (prefer frontend/, fallback to desktop/frontend)
 $FrontendDir = Join-Path $ScriptDir 'frontend'
@@ -91,16 +97,21 @@ if (!(Test-Path $FrontendDir)) {
     $alt = Join-Path $ScriptDir 'desktop/frontend'
     if (Test-Path $alt) { $FrontendDir = $alt } else { Fail "Frontend directory not found: $FrontendDir" }
 }
-Write-Info 'Starting frontend at http://localhost:5500 ...'
-$frontend = Start-Process -FilePath $VenvPython -ArgumentList '-m','http.server','5500' -WorkingDirectory $FrontendDir -WindowStyle Minimized -PassThru
+
+# Write config.js so frontend knows the backend port
+$ConfigPath = Join-Path $FrontendDir 'config.js'
+"window.BACKEND_URL = 'http://localhost:$BackendPort';" | Out-File -FilePath $ConfigPath -Encoding ASCII
+
+Write-Info "Starting frontend at http://localhost:$FrontendPort ..."
+$frontend = Start-Process -FilePath $VenvPython -ArgumentList '-m','http.server',$FrontendPort -WorkingDirectory $FrontendDir -WindowStyle Minimized -PassThru
 
 # Wait briefly and print URLs
 Start-Sleep -Seconds 2
 Write-Ok 'Dorian Lyrics Maker v1 is ready.'
-Write-Ok 'Frontend:  http://localhost:5500/'
-Write-Ok 'Backend:   http://localhost:5000/'
+Write-Ok "Frontend:  http://localhost:$FrontendPort/"
+Write-Ok "Backend:   http://localhost:$BackendPort/"
 
 # Open browser
-try { Start-Process 'http://localhost:5500/' } catch { Write-Warn 'Failed to open browser automatically. Please open http://localhost:5500/ manually.' }
+try { Start-Process "http://localhost:$FrontendPort/" } catch { Write-Warn "Failed to open browser automatically. Please open http://localhost:$FrontendPort/ manually." }
 
 Write-Info 'To stop, close the two minimized server windows that were opened.'

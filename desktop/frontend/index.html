@@ -252,16 +252,17 @@
         
         .lyrics-overlay {
             position: absolute;
-            bottom: 20px;
+            bottom: 40px;
             left: 50%;
             transform: translateX(-50%);
             text-align: center;
             color: white;
-            font-size: 24px;
-            font-weight: 600;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            font-size: 28px;
+            font-weight: 700;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0,0,0,1);
             max-width: 90%;
             pointer-events: none;
+            z-index: 100;
         }
         
         .word {
@@ -410,17 +411,48 @@
         <div class="main-content">
             <div class="sidebar">
                 <div class="form-section">
-                    <h3>🎵 Audio File</h3>
+                    <h3>🎬 Media Input</h3>
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label class="file-input-label">Media Type:</label>
+                        <div style="display: flex; gap: 15px; font-size: 14px; color: #555;">
+                            <label style="cursor:pointer;"><input type="radio" name="mediaType" id="mediaTypeAudio" checked> Audio</label>
+                            <label style="cursor:pointer;"><input type="radio" name="mediaType" id="mediaTypeVideo"> Video</label>
+                        </div>
+                    </div>
+
                     <div class="file-input-group">
-                        <label class="file-input-label">Select Audio File</label>
+                        <label class="file-input-label" id="mediaFileLabel">Select Audio File</label>
                         <div class="file-input-wrapper">
                             <input type="file" id="audioFile" class="file-input" accept="audio/*">
-                            <label for="audioFile" class="file-input-button">Choose Audio File</label>
+                            <label for="audioFile" class="file-input-button" id="chooseFileBtn">Choose Audio File</label>
                         </div>
                         <div class="file-info" id="audioFileInfo">No file selected</div>
                     </div>
                     <div class="drag-drop-area" id="audioDropArea">
-                        <p class="drag-drop-text">📁 Or drag and drop audio files here</p>
+                        <p class="drag-drop-text" id="dropAreaText">📁 Or drag and drop audio files here</p>
+                    </div>
+                </div>
+
+                <div class="form-section" id="backgroundSection">
+                    <h3>🖼️ Background</h3>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label class="file-input-label">Background Type:</label>
+                        <div style="display: flex; gap: 15px; font-size: 14px; color: #555;">
+                            <label style="cursor:pointer;"><input type="radio" name="bgType" id="bgTypeColor" checked> Color</label>
+                            <label style="cursor:pointer;"><input type="radio" name="bgType" id="bgTypeImage"> Image</label>
+                        </div>
+                    </div>
+                    <div id="bgColorGroup">
+                        <label class="file-input-label">Background Color</label>
+                        <input type="color" id="bgColor" value="#000000" style="width: 100%; height: 40px; border: none; border-radius: 6px; cursor: pointer;">
+                    </div>
+                    <div id="bgImageGroup" class="hidden">
+                        <label class="file-input-label">Select Image</label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="bgImageFile" class="file-input" accept="image/*">
+                            <label for="bgImageFile" class="file-input-button">Choose Image File</label>
+                        </div>
+                        <div class="file-info" id="bgImageFileInfo">No file selected</div>
                     </div>
                 </div>
                 

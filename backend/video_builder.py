@@ -1,15 +1,18 @@
 import os
 import json
 import argparse
+import subprocess
 from moviepy.editor import (
     AudioFileClip, 
     TextClip, 
     ColorClip, 
     ImageClip, 
+    VideoFileClip,
     CompositeVideoClip, 
     concatenate_videoclips
 )
-from moviepy.video.fx.all import fadein, fadeout
+from moviepy.video.fx.fadein import fadein
+from moviepy.video.fx.fadeout import fadeout
 from moviepy.video.tools.subtitles import SubtitlesClip
 try:
     from backend.config import (
@@ -69,8 +72,129 @@ DEFAULT_BG_COLOR = (0, 0, 0)  # Black background
 DEFAULT_FADE_IN = 0.25
 DEFAULT_FADE_OUT = 0.25
 
-def create_background(width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, color=DEFAULT_BG_COLOR, image_path=None):
+def extract_video_thumbnail(video_path, output_path, title=None, artist=None, font_name=DEFAULT_FONT):
+    """
+    Extract the first frame of a video as a thumbnail image and overlay title/artist.
+    """
     try:
+        from backend.config import FFMPEG_PATH
+        # Use a temporary file for raw extraction
+        temp_thumb = output_path + ".raw.png"
+        cmd = [
+            FFMPEG_PATH, '-y',
+            '-i', video_path,
+            '-frames:v', '1',
+            '-q:v', '2',
+            temp_thumb
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        if not os.path.exists(temp_thumb):
+            return None
+
+        # Open extracted frame with PIL to add text overlay
+        img = Image.open(temp_thumb).convert('RGBA')
+        width, height = img.size
+        
+        # Add a subtle dark overlay over the whole image to make text pop
+        overlay = Image.new('RGBA', (width, height), (0, 0, 0, 60)) # 60/255 opacity
+        img = Image.alpha_composite(img, overlay)
+        draw = ImageDraw.Draw(img)
+
+        if title or artist:
+            # Load fonts with massive sizes as requested
+            # Title: 35% of height, Artist: 17%
+            title_size = int(height * 0.35)
+            artist_size = int(height * 0.17)
+            
+            title_font = _load_pil_font(font_name, title_size)
+            artist_font = _load_pil_font(font_name, artist_size)
+
+            # Center coordinates
+            center_x = width // 2
+            
+            # Layout: Title high, Artist low for maximum separation
+            if title and artist:
+                title_y = int(height * 0.30)
+                artist_y = int(height * 0.70)
+            elif title:
+                title_y = height // 2
+                artist_y = height // 2
+            else:
+                title_y = height // 2
+                artist_y = height // 2
+
+            # Shadow/Stroke color
+            shadow_color = (0, 0, 0, 255)
+            stroke_width = max(2, int(height * 0.005))
+
+            if title:
+                # Uppercase title to match reference image style
+                title_text = str(title).upper()
+                # Draw title with thick stroke for maximum clarity
+                draw.text((center_x, title_y), title_text, font=title_font, 
+                          fill=(255, 255, 255, 255), anchor='mm',
+                          stroke_width=stroke_width, stroke_fill=shadow_color)
+
+            if artist:
+                artist_text = str(artist).upper()
+                # Draw artist with slightly thinner stroke
+                draw.text((center_x, artist_y), artist_text, font=artist_font, 
+                          fill=(255, 255, 255, 230), anchor='mm',
+                          stroke_width=max(1, stroke_width // 2), stroke_fill=shadow_color)
+
+        # Save final thumbnail
+        img.convert('RGB').save(output_path, 'PNG')
+        
+        # Cleanup
+        if os.path.exists(temp_thumb):
+            os.remove(temp_thumb)
+            
+        return output_path
+    except Exception as e:
+        print(f"Error extracting thumbnail: {e}")
+        return None
+
+def add_metadata(input_path, output_path, title=None, artist=None):
+    """
+    Add metadata (title, artist) to a video file using FFmpeg.
+    """
+    try:
+        from backend.config import FFMPEG_PATH
+        cmd = [FFMPEG_PATH, '-y', '-i', input_path]
+        if title:
+            cmd.extend(['-metadata', f'title={title}'])
+        if artist:
+            cmd.extend(['-metadata', f'artist={artist}'])
+        cmd.extend(['-c', 'copy', output_path])
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return output_path
+    except Exception as e:
+        print(f"Error adding metadata: {e}")
+        return input_path
+
+def create_background(width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, color=DEFAULT_BG_COLOR, image_path=None, video_path=None):
+    try:
+        # Check if video background is provided
+        if video_path and os.path.exists(video_path):
+            try:
+                clip = VideoFileClip(video_path)
+                # Resize and crop to fill the target resolution
+                # MoviePy's resize can be slow, but it's consistent
+                w, h = clip.size
+                if w != width or h != height:
+                    # Calculate scaling to fill
+                    scale = max(width/w, height/h)
+                    new_w, new_h = int(w * scale), int(h * scale)
+                    clip = clip.resize(newsize=(new_w, new_h))
+                    # Crop to center
+                    x_center = new_w / 2
+                    y_center = new_h / 2
+                    clip = clip.crop(x_center=x_center, y_center=y_center, width=width, height=height)
+                return clip
+            except Exception as _vid_err:
+                print(f"Video background failed ({_vid_err}); falling back to image/color")
+
         if image_path and os.path.exists(image_path):
             src = Image.open(image_path).convert('RGB')
             try:
@@ -357,11 +481,12 @@ def generate_thumbnail_image(title, artist, out_path,
         draw = ImageDraw.Draw(bg)
         fg = 'white'
 
-        # Base sizes: thumbnails should be larger than video text
-        title_fs_base = int(title_fontsize or int(DEFAULT_FONTSIZE * 1.8))
-        artist_fs_base = int(artist_fontsize or max(32, int(title_fs_base * 0.7)))
+        # Massive sizes for thumbnails
+        title_fs_base = int(title_fontsize or int(height * 0.35))
+        artist_fs_base = int(artist_fontsize or int(height * 0.17))
 
-        stroke_w = 0
+        stroke_w = max(2, int(height * 0.005))
+        stroke_fill = (0, 0, 0, 255)
 
         # Helper to measure and fit text into target width with margins
         def _measure(txt, font, sw):
@@ -373,7 +498,7 @@ def generate_thumbnail_image(title, artist, out_path,
         def _fit_font(txt, desired_size):
             if not (txt and len(str(txt).strip()) > 0):
                 return _load_pil_font(font_name, desired_size), desired_size
-            margin = 60
+            margin = width * 0.1 # 10% margin
             max_w = max(100, width - margin)
             size = max(24, int(desired_size))
             font_tmp = _load_pil_font(font_name, size)
@@ -387,32 +512,27 @@ def generate_thumbnail_image(title, artist, out_path,
         # Fit fonts to width
         title_font, title_fs = _fit_font(title or '', title_fs_base)
         artist_font, artist_fs = _fit_font(artist or '', artist_fs_base)
-        title_w, title_h = _measure(title or '', title_font, stroke_w)
-        artist_w, artist_h = _measure(artist or '', artist_font, stroke_w)
 
-        # Layout: title higher and artist slightly higher to match sample composition
+        # Layout: Title high, Artist low for maximum separation
         title_x = width // 2
-        title_y = int(height * 0.32)
         artist_x = width // 2
-        artist_y = int(height * 0.62)
+        
+        if title and artist:
+            title_y = int(height * 0.30)
+            artist_y = int(height * 0.70)
+        else:
+            title_y = height // 2
+            artist_y = height // 2
 
         # Render centered text with stroke
         if title:
-            if stroke_w > 0:
-                draw.text((title_x, title_y), str(title), font=title_font,
-                          fill=fg, stroke_width=stroke_w, stroke_fill=fg,
-                          anchor='mm')
-            else:
-                draw.text((title_x, title_y), str(title), font=title_font,
-                          fill=fg, anchor='mm')
+            draw.text((title_x, title_y), str(title).upper(), font=title_font,
+                      fill=fg, stroke_width=stroke_w, stroke_fill=stroke_fill,
+                      anchor='mm')
         if artist:
-            if stroke_w > 0:
-                draw.text((artist_x, artist_y), str(artist), font=artist_font,
-                          fill=fg, stroke_width=stroke_w, stroke_fill=fg,
-                          anchor='mm')
-            else:
-                draw.text((artist_x, artist_y), str(artist), font=artist_font,
-                          fill=fg, anchor='mm')
+            draw.text((artist_x, artist_y), str(artist).upper(), font=artist_font,
+                      fill=fg, stroke_width=max(1, stroke_w // 2), stroke_fill=stroke_fill,
+                      anchor='mm')
 
         # Save
         ext = os.path.splitext(out_path)[1].lower()
@@ -449,6 +569,7 @@ def _measure_words(text, font_obj, stroke_width, video_width):
 
 def build_lyric_video(audio_path, alignment_path, output_path=None, 
                      background_path=None, background_color=DEFAULT_BG_COLOR,
+                     background_video_path=None,
                      width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
                      use_highlight=False, progress_callback=None, chunk_size=10,
                      font_name=DEFAULT_FONT, fontsize=DEFAULT_FONTSIZE,
@@ -464,6 +585,7 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
         output_path (str, optional): Path for output video. Defaults to None.
         background_path (str, optional): Path to background image. Defaults to None.
         background_color (tuple): RGB color tuple for background
+        background_video_path (str, optional): Path to background video. Defaults to None.
         width (int): Video width
         height (int): Video height
         use_highlight (bool): Whether to use highlight animation
@@ -483,6 +605,16 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
     
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    audio_clip = None
+    background = None
+    text_clips = []
+    indicator_clips = []
+    main_video = None
+    outro_clip_audio = None
+    outro_bg = None
+    outro_section = None
+    final_video = None
     
     try:
         # Load audio (we may reassign after computing trims)
@@ -614,7 +746,7 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
             print(f"Intro trim skipped: {_trim_err}")
 
         # Create background after determining final audio duration
-        background = create_background(width, height, background_color, background_path)
+        background = create_background(width, height, background_color, background_path, background_video_path)
         background = background.set_duration(audio_clip.duration)
 
         # Sanitize, sort, and normalize lyric timings to avoid overlaps and enforce readability
@@ -659,8 +791,6 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
             print(f"Lyric timing sanitize skipped: {_sanitize_err}")
 
         # Create text clips for each lyric
-        text_clips = []
-        indicator_clips = []
         
         total_lyrics = max(1, len(lyrics))
         for idx, lyric in enumerate(lyrics):
@@ -869,6 +999,19 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
     except Exception as e:
         print(f"Error building lyric video: {e}")
         return None
+
+    finally:
+        # Cleanup routine: exhaust moviepy memory buffers and unlock files to avoid Windows resource leaks
+        clips_to_close = [
+            audio_clip, background, main_video, outro_clip_audio, 
+            outro_bg, outro_section, final_video
+        ] + text_clips + indicator_clips
+        for clip in clips_to_close:
+            if clip is not None and hasattr(clip, 'close'):
+                try:
+                    clip.close()
+                except Exception:
+                    pass
 
 if __name__ == "__main__":
     # Parse command line arguments
