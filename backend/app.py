@@ -1360,7 +1360,7 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
             # Instrumental variant
             if instrumental_path:
                 inst_output = os.path.join(session_dir, f"{base_name}_instrumental.{ext}")
-                t_inst = threading.Thread(target=_render_instrument_video_variant_async, args=(job_id, video_path, instrumental_path, alignment_path, inst_output, font_name, fontsize, song_title, artist_name, bg_rgb, bg_image_path, session_dir, files_to_keep))
+                t_inst = threading.Thread(target=_render_instrument_video_variant_async, args=(job_id, video_path, instrumental_path, alignment_path, inst_output, font_name, fontsize, song_title, artist_name, bg_rgb, bg_image_path, session_dir, files_to_keep, outro_path, outro_text))
                 t_inst.daemon = True
                 t_inst.start()
             else:
@@ -1387,7 +1387,7 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         jobs[job_id]["status"] = "error"
         jobs[job_id]["error"] = str(e)
 
-def _render_instrument_video_variant_async(job_id, video_path, instrumental_path, alignment_path, output_path, font_name, fontsize, title, artist, bg_rgb=None, bg_image_path=None, session_dir=None, files_to_keep=None):
+def _render_instrument_video_variant_async(job_id, video_path, instrumental_path, alignment_path, output_path, font_name, fontsize, title, artist, bg_rgb=None, bg_image_path=None, session_dir=None, files_to_keep=None, outro_path=None, outro_text=None):
     try:
         # Step 1: Generate the lyric-on-background video (using background video or color/image)
         # For instrumentals, we still want the same background as the main video.
@@ -1422,7 +1422,7 @@ def _render_instrument_video_variant_async(job_id, video_path, instrumental_path
                     output_path = composite_path
 
             # Step 3: Add metadata
-            final_path = add_metadata(output_path, output_path.replace(".mp4", "_final.mp4"), title=f"{title} (Instrumental)", artist=artist)
+            final_path = add_metadata(output_path, output_path.replace(".mp4", "_meta.mp4"), title=f"{title} (Instrumental)", artist=artist)
             
             # Cleanup intermediate meta file if created
             if final_path != output_path and os.path.exists(output_path):
@@ -1431,21 +1431,47 @@ def _render_instrument_video_variant_async(job_id, video_path, instrumental_path
                 except Exception:
                     pass
             
-            jobs[job_id]["instrumental_video"] = final_path
-            rel_inst = os.path.relpath(final_path, OUTPUT_DIR).replace("\\", "/")
+            output_path = final_path
+
+            # Step 4: Handle Outro for Instrumental
+            if outro_path and os.path.exists(outro_path):
+                print(f"[Instrumental] Appending outro to: {output_path}")
+                # Create a specialized version of outro append for instrumental
+                # We need to wait for it to finish before marking as done
+                _append_outro_async(
+                    job_id, 
+                    output_path, 
+                    outro_path, 
+                    bg_color=bg_rgb, 
+                    bg_image_path=bg_image_path, 
+                    font_name=font_name, 
+                    font_size=fontsize or 70, 
+                    outro_text=outro_text
+                )
+                
+                # Check if it finished and update output_path
+                # _append_outro_async updates jobs[job_id]["final_output"]
+                # But that might conflict with the main video's final output.
+                # Let's check for the existence of the expected final file.
+                inst_final = output_path.replace(".mp4", "_final.mp4")
+                if os.path.exists(inst_final):
+                    output_path = inst_final
+
+            jobs[job_id]["instrumental_video"] = output_path
+            rel_inst = os.path.relpath(output_path, OUTPUT_DIR).replace("\\", "/")
             jobs[job_id]["instrumental_video_url"] = f"/outputs/{rel_inst}"
-            print(f"Instrumental variant completed: {final_path}")
+            print(f"Instrumental variant completed: {output_path}")
 
             # Cleanup after all variants are done
             if session_dir and files_to_keep:
-                files_to_keep.append(final_path)
+                if output_path not in files_to_keep:
+                    files_to_keep.append(output_path)
                 
                 # Simple helper to check if all requested variants are done
-                # (Main video is already done if we are here)
                 def _cleanup_session(s_dir, keep_files):
                     try:
                         import time
-                        time.sleep(2) # Brief wait to ensure files are closed
+                        time.sleep(3) # Wait a bit longer for all threads
                         for f in os.listdir(s_dir):
                             f_path = os.path.join(s_dir, f)
                             if os.path.isfile(f_path) and f_path not in keep_files:
