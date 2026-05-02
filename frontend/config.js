@@ -1,1 +1,1 @@
-window.BACKEND_URL = 'http://localhost:3750';
+window.BACKEND_URL = 'http://localhost:11736';

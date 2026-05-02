@@ -423,12 +423,21 @@ def _ffmpeg_chromakey_overlay(original_video_path, lyrics_video_path, output_pat
     ]
 
     # ── STAGE 1: Screen Blend (Primary) ────────────────────────────────────
-    # Since we now render lyrics on BLACK background for video mode, 
-    # screen blend is the perfect way to composite.
+    # Since we render lyrics on a BLACK background for video mode, screen
+    # blend is the perfect compositing method.
+    #
+    # IMPORTANT: screen blend MUST operate in RGB space, not YUV.
+    # In YUV the chroma channels (U, V) are 128 for a neutral/black pixel,
+    # not 0.  Applying screen( U=128, U=128 ) → ≈192, which produces a
+    # strong magenta/pink cast.  Converting both streams to planar-RGB
+    # (gbrp) before the blend fixes this; the encoder's -pix_fmt yuv420p
+    # then converts the result back to YUV correctly.
     fc_screen = (
         f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
-        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[bg];"
-        f"[1:v]scale={out_w}:{out_h},setsar=1,fps={fps}[fg];"
+        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
+        f"format=gbrp[bg];"
+        f"[1:v]scale={out_w}:{out_h},setsar=1,fps={fps},"
+        f"format=gbrp[fg];"
         f"[bg][fg]blend=all_mode=screen:all_opacity=1[v]"
     )
     try:
