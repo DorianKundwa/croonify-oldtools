@@ -238,7 +238,156 @@
             border-radius: 4px;
             pointer-events: none;
         }
+
+        /* ── Lyric Editor Panel ── */
+        #lyricEditorPanel {
+            margin-top: 22px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            border-radius: 12px;
+            border: 1px solid rgba(78, 205, 196, 0.25);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08);
+            overflow: hidden;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        #lyricEditorHeader {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 20px;
+            background: rgba(78,205,196,0.08);
+            border-bottom: 1px solid rgba(78,205,196,0.15);
+            cursor: pointer; user-select: none;
+        }
+        .editor-header-left { display: flex; align-items: baseline; gap: 10px; }
+        #lyricEditorHeader h3 { margin: 0; font-size: 0.95rem; font-weight: 600; color: #4ecdc4; letter-spacing: 0.5px; }
+        #editorSubCaption { font-size: 0.72rem; color: rgba(78,205,196,0.55); font-weight: 400; }
+        #lyricEditorChevron { color: #4ecdc4; font-size: 1.1rem; transition: transform 0.25s ease; }
+        #lyricEditorBody { display: none; padding: 16px 16px 20px; }
+        #lyricEditorBody.open { display: block; }
+
+        /* Controls rows */
+        .editor-controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; align-items: center; }
+        .editor-controls-row2 {
+            display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;
+            align-items: center; padding: 8px 10px;
+            background: rgba(0,0,0,0.2); border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .editor-controls-label { font-size: 0.67rem; color: rgba(200,200,200,0.38); text-transform: uppercase; letter-spacing: 0.6px; margin-right: 2px; }
+        .editor-btn {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 7px 13px; min-height: 34px;
+            border: 1px solid rgba(255,255,255,0.15); border-radius: 6px;
+            background: rgba(255,255,255,0.07); color: #e0e0e0;
+            font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap;
+            transition: background 0.15s, border-color 0.15s, transform 0.1s;
+        }
+        .editor-btn:hover    { background: rgba(78,205,196,0.18); border-color: rgba(78,205,196,0.5); color: #fff; }
+        .editor-btn:active   { transform: scale(0.97); }
+        .editor-btn:disabled { opacity: 0.38; cursor: not-allowed; transform: none; }
+        .editor-btn.primary  { background: rgba(78,205,196,0.22); border-color: rgba(78,205,196,0.6); color: #4ecdc4; font-weight: 600; }
+        .editor-btn.primary:hover { background: rgba(78,205,196,0.38); }
+        .editor-btn.danger   { background: rgba(255,87,87,0.15);  border-color: rgba(255,87,87,0.4);  color: #ff6b6b; }
+        .editor-btn.danger:hover  { background: rgba(255,87,87,0.3); }
+        .editor-btn.accent   { background: rgba(255,200,80,0.15); border-color: rgba(255,200,80,0.4); color: #ffc850; }
+        .editor-btn.accent:hover  { background: rgba(255,200,80,0.28); }
+        .editor-btn.ph-set   { background: rgba(120,180,255,0.12); border-color: rgba(120,180,255,0.4); color: #90caf9; }
+        .editor-btn.ph-set:hover  { background: rgba(120,180,255,0.28); }
+
+        /* Timeline */
+        #timelineWrapper { position: relative; margin-bottom: 12px; }
+        #timelineCanvas {
+            width: 100%; height: 120px; border-radius: 8px;
+            background: rgba(0,0,0,0.4); border: 1px solid rgba(78,205,196,0.18);
+            display: block; cursor: crosshair; touch-action: none;
+        }
+        #timelineHint { font-size: 0.67rem; color: rgba(200,200,200,0.38); text-align: right; margin-top: 3px; }
+
+        /* Fragment table */
+        #fragmentTableWrap {
+            max-height: 320px; overflow-y: auto;
+            border-radius: 8px; border: 1px solid rgba(78,205,196,0.15);
+            background: rgba(0,0,0,0.25); margin-bottom: 12px;
+        }
+        #fragmentTableWrap::-webkit-scrollbar { width: 6px; }
+        #fragmentTableWrap::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+        #fragmentTableWrap::-webkit-scrollbar-thumb { background: rgba(78,205,196,0.35); border-radius: 3px; }
+        #fragmentTable { width: 100%; border-collapse: collapse; font-size: 0.77rem; color: #ddd; }
+        #fragmentTable thead th {
+            position: sticky; top: 0; background: rgba(15,52,96,0.97); backdrop-filter: blur(6px);
+            padding: 7px 6px; text-align: left; font-weight: 600; color: #4ecdc4;
+            font-size: 0.7rem; letter-spacing: 0.4px;
+            border-bottom: 1px solid rgba(78,205,196,0.2); white-space: nowrap;
+        }
+        #fragmentTable tbody tr { border-bottom: 1px solid rgba(255,255,255,0.05); transition: background 0.12s; cursor: pointer; }
+        #fragmentTable tbody tr:hover    { background: rgba(78,205,196,0.08); }
+        #fragmentTable tbody tr.selected { background: rgba(78,205,196,0.18); }
+        #fragmentTable td { padding: 5px 6px; vertical-align: middle; white-space: nowrap; }
+        #fragmentTable td.lyric-text {
+            white-space: normal; word-break: break-word; color: #fff; font-weight: 500;
+            min-width: 80px; max-width: 160px; border-radius: 3px; outline: none;
+        }
+        #fragmentTable td.lyric-text:focus { background: rgba(78,205,196,0.12); box-shadow: 0 0 0 1px rgba(78,205,196,0.5); }
+        #fragmentTable td.dur-cell  { color: rgba(180,180,180,0.5); font-size: 0.7rem; font-variant-numeric: tabular-nums; }
+        #fragmentTable td.ph-cell   { padding: 3px 4px; }
+        #fragmentTable td.adjust-cell { padding: 3px 2px; }
+        .ts-input {
+            width: 72px; background: rgba(255,255,255,0.07); border: 1px solid rgba(78,205,196,0.25);
+            border-radius: 4px; color: #ccc; font-size: 0.74rem; padding: 3px 5px;
+            font-family: 'Consolas', monospace; transition: border-color 0.15s;
+        }
+        .ts-input:focus { outline: none; border-color: #4ecdc4; color: #fff; background: rgba(78,205,196,0.1); }
+        .micro-btn {
+            padding: 2px 5px; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px;
+            background: rgba(255,255,255,0.04); color: #999; font-size: 0.65rem;
+            cursor: pointer; transition: background 0.12s, color 0.12s;
+            display: inline-block; margin: 1px; min-height: 20px;
+        }
+        .micro-btn.neg:hover { background: rgba(255,107,107,0.25); color: #ff6b6b; border-color: rgba(255,107,107,0.4); }
+        .micro-btn.pos:hover { background: rgba(78,205,196,0.22);  color: #4ecdc4; border-color: rgba(78,205,196,0.5); }
+        .micro-btn.ph-btn    { background: rgba(120,180,255,0.08); color: #90caf9; border-color: rgba(120,180,255,0.25); }
+        .micro-btn.ph-btn:hover { background: rgba(120,180,255,0.25); color: #bbdefb; }
+
+        /* Y-offset handle */
+        #yOffsetHandle {
+            position: absolute; left: 4px; width: 26px; height: 26px;
+            background: rgba(78,205,196,0.85); border-radius: 50%; cursor: ns-resize;
+            display: none; align-items: center; justify-content: center;
+            font-size: 0.8rem; color: #000; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            user-select: none; z-index: 99;
+        }
+        #yOffsetHandle.visible { display: flex; }
+
+        /* Status bar */
+        #editorStatus {
+            font-size: 0.75rem; padding: 7px 12px; border-radius: 6px;
+            margin-top: 8px; text-align: center; display: none; transition: opacity 0.3s;
+        }
+        #editorStatus.info    { background: rgba(78,205,196,0.12); color: #4ecdc4; display: block; }
+        #editorStatus.success { background: rgba(76,175,80,0.15);  color: #81c784; display: block; }
+        #editorStatus.error   { background: rgba(255,87,87,0.15);  color: #ff6b6b; display: block; }
+        #editorStatus.working { background: rgba(255,200,80,0.12); color: #ffc850; display: block; }
+
+        /* Keyboard shortcut legend */
+        #shortcutLegend { margin-top: 10px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; overflow: hidden; font-size: 0.72rem; }
+        #shortcutLegend summary {
+            padding: 7px 12px; background: rgba(255,255,255,0.04); color: rgba(200,200,200,0.5);
+            cursor: pointer; user-select: none; list-style: none; display: flex; align-items: center; gap: 6px;
+        }
+        #shortcutLegend summary::-webkit-details-marker { display: none; }
+        #shortcutLegend[open] summary { color: rgba(78,205,196,0.8); }
+        .shortcut-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 4px 16px; padding: 10px 14px 12px; background: rgba(0,0,0,0.18); }
+        .shortcut-row  { display: flex; align-items: center; gap: 8px; }
+        .shortcut-key  { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: 0.7rem; color: #ccc; white-space: nowrap; flex-shrink: 0; }
+        .shortcut-desc { color: rgba(200,200,200,0.6); }
+
+        /* Rerender status */
+        #rerenderStatus { margin-top: 10px; padding: 10px 14px; border-radius: 8px; background: rgba(78,205,196,0.08); border: 1px solid rgba(78,205,196,0.2); display: none; font-size: 0.8rem; color: #aaa; }
+        #rerenderStatus.open { display: block; }
+        #rerenderStatus p { margin: 0 0 6px; color: #ccc; }
+        #rerenderStatus progress { width: 100%; height: 6px; border-radius: 3px; overflow: hidden; appearance: none; }
+        #rerenderStatus progress::-webkit-progress-bar   { background: rgba(255,255,255,0.1); border-radius: 3px; }
+        #rerenderStatus progress::-webkit-progress-value { background: linear-gradient(90deg, #4ecdc4, #45b7d1); border-radius: 3px; }
     </style>
+
 </head>
 <body>
     <h1>Dorian Lyrics Maker v1</h1>
@@ -360,6 +509,8 @@
                 <div id="lyricsOverlay" aria-live="polite" aria-label="Current lyric"></div>
                 <!-- Sync timing badge -->
                 <div id="syncBadge"></div>
+                <!-- Y-offset drag handle (visible when Y-edit mode is active) -->
+                <div id="yOffsetHandle" title="Drag up/down to shift lyric position">↕</div>
                 <!-- Error overlay (hidden by default) -->
                 <div id="videoErrorBanner" class="hidden">
                     <span>⚠️ Video failed to load.</span>
@@ -369,6 +520,93 @@
             <p style="font-size:0.85em;color:#666;margin-top:6px;">
                 <a id="videoDownloadLink" href="#" download style="color:#4CAF50;text-decoration:none;font-weight:600;">⬇ Download Video</a>
             </p>
+
+            <!-- ── Lyric Editor Panel ── -->
+            <div id="lyricEditorPanel" class="hidden">
+                <div id="lyricEditorHeader" role="button" aria-expanded="false" aria-controls="lyricEditorBody" tabindex="0">
+                    <div class="editor-header-left">
+                        <h3>✏️ Edit Lyrics Timing &amp; Position</h3>
+                        <span id="editorSubCaption"></span>
+                    </div>
+                    <span id="lyricEditorChevron">▼</span>
+                </div>
+                <div id="lyricEditorBody">
+
+                    <!-- Top controls -->
+                    <div class="editor-controls">
+                        <button class="editor-btn" id="editorUndoBtn" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
+                        <button class="editor-btn" id="editorRedoBtn" title="Redo (Ctrl+Y)" disabled>↪ Redo</button>
+                        <button class="editor-btn" id="editorPreviewBtn" title="Play from selected lyric">▶ Preview</button>
+                        <button class="editor-btn" id="editorYToggleBtn" title="Toggle Y-position drag mode">↕ Y-offset</button>
+                        <div style="flex:1"></div>
+                        <button class="editor-btn danger" id="editorResetBtn" title="Reset all changes">↺ Reset</button>
+                        <button class="editor-btn accent" id="editorSaveBtn" title="Save alignment (Ctrl+S)">💾 Save</button>
+                        <button class="editor-btn primary" id="editorRerenderBtn" title="Save &amp; re-render video">🎬 Re-render</button>
+                    </div>
+
+                    <!-- Playhead toolbar row -->
+                    <div class="editor-controls-row2">
+                        <span class="editor-controls-label">⏱ Set from playhead:</span>
+                        <button class="editor-btn ph-set" id="editorSetStartBtn" title="Set selected lyric START to current video time (I)">Set Start &nbsp;<kbd style="opacity:0.6;font-size:0.7em">I</kbd></button>
+                        <button class="editor-btn ph-set" id="editorSetEndBtn"   title="Set selected lyric END to current video time (O)">Set End &nbsp;<kbd style="opacity:0.6;font-size:0.7em">O</kbd></button>
+                        <div style="flex:1"></div>
+                        <span style="font-size:0.67rem;color:rgba(200,200,200,0.35);">Click timeline empty area to seek</span>
+                    </div>
+
+                    <!-- Timeline canvas -->
+                    <div id="timelineWrapper">
+                        <canvas id="timelineCanvas" aria-label="Lyrics timeline"></canvas>
+                        <p id="timelineHint">Drag blocks to adjust · Scroll to zoom · Pinch on touch · Click gap to seek</p>
+                    </div>
+
+                    <!-- Fragment table -->
+                    <div id="fragmentTableWrap">
+                        <table id="fragmentTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Lyric <span style="font-weight:400;opacity:0.45">(click to edit)</span></th>
+                                    <th>Start</th>
+                                    <th title="Adjust start">± ms</th>
+                                    <th>End</th>
+                                    <th title="Adjust end">± ms</th>
+                                    <th title="Duration">Dur</th>
+                                    <th title="Set from playhead">⏱</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fragmentTableBody"></tbody>
+                        </table>
+                    </div>
+
+                    <!-- Status / re-render progress -->
+                    <div id="editorStatus"></div>
+                    <div id="rerenderStatus">
+                        <p id="rerenderMsg">Re-rendering…</p>
+                        <progress id="rerenderProgress" value="0" max="100"></progress>
+                        <p id="rerenderDownload" style="margin-top:6px;display:none;">
+                            <a id="rerenderLink" href="#" download style="color:#4ecdc4;font-weight:600;">⬇ Download Re-rendered Video</a>
+                        </p>
+                    </div>
+
+                    <!-- Keyboard shortcut legend -->
+                    <details id="shortcutLegend">
+                        <summary>⌨️ Keyboard Shortcuts</summary>
+                        <div class="shortcut-grid">
+                            <div class="shortcut-row"><span class="shortcut-key">← →</span><span class="shortcut-desc">Shift lyric ±10ms</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">Shift+← →</span><span class="shortcut-desc">Shift lyric ±100ms</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">[ ]</span><span class="shortcut-desc">Nudge Start ±10ms</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">{ }</span><span class="shortcut-desc">Nudge End ±10ms</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">I</span><span class="shortcut-desc">Set Start from playhead</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">O</span><span class="shortcut-desc">Set End from playhead</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">↑ ↓</span><span class="shortcut-desc">Select prev / next lyric</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">Ctrl+Z</span><span class="shortcut-desc">Undo</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">Ctrl+Y</span><span class="shortcut-desc">Redo</span></div>
+                            <div class="shortcut-row"><span class="shortcut-key">Ctrl+S</span><span class="shortcut-desc">Save alignment</span></div>
+                        </div>
+                    </details>
+
+                </div><!-- /lyricEditorBody -->
+            </div><!-- /lyricEditorPanel -->
         </div>
 
         <!-- ── Thumbnail ── -->
@@ -382,7 +620,12 @@
     </div><!-- /.container -->
 
     <script src="config.js"></script>
+    <script src="lyric_editor.js"></script>
+    <script src="lyric_editor_timeline.js"></script>
+    <script src="lyric_editor_table.js"></script>
+    <script src="lyric_editor_actions.js"></script>
     <script>
+
     document.addEventListener('DOMContentLoaded', function () {
 
         /* ── Element refs ── */
@@ -970,6 +1213,7 @@
          * WEB AUDIO + LYRICS OVERLAY ENGINE
          * ======================================================= */
         let alignmentEntries = [];
+        window.alignmentEntries = alignmentEntries; // shared with LyricEditor
         let audioCtx   = null;
         let analyser   = null;
         let mediaSrc   = null;
@@ -1017,8 +1261,14 @@
                         })) : []
                     }))
                     .sort((a, b) => a.start - b.start);
+                window.alignmentEntries = alignmentEntries;
 
                 wirePlaybackEvents();
+
+                // Open the Lyric Editor panel
+                if (window.LyricEditor && window.LyricEditor.openEditor) {
+                    window.LyricEditor.openEditor(currentJobId, API_BASE_URL, data);
+                }
             } catch (e) {
                 console.error('Lyrics overlay setup failed:', e);
                 // Non-fatal — video still plays without overlay
@@ -1092,9 +1342,10 @@
                 rafId = requestAnimationFrame(loop);
                 if (stalled || videoPreview.paused || videoPreview.ended) return;
                 const t   = videoPreview.currentTime;
+                const entries = window.alignmentEntries || alignmentEntries;
                 const idx = findFragmentIndex(t);
                 if (idx >= 0) {
-                    const entry = alignmentEntries[idx];
+                    const entry = entries[idx];
                     if (idx !== currentLineIdx) {
                         renderLine(entry);
                         currentLineIdx = idx;
@@ -1126,14 +1377,15 @@
 
         /* ── Fragment / word finders (binary search) ── */
         function findFragmentIndex(t) {
-            if (!alignmentEntries.length) return -1;
-            let lo = 0, hi = alignmentEntries.length - 1, ans = -1;
+            const entries = window.alignmentEntries || alignmentEntries;
+            if (!entries.length) return -1;
+            let lo = 0, hi = entries.length - 1, ans = -1;
             while (lo <= hi) {
                 const mid = (lo + hi) >> 1;
-                if (alignmentEntries[mid].start <= t) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+                if (entries[mid].start <= t) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
             }
             if (ans >= 0) {
-                const f = alignmentEntries[ans];
+                const f = entries[ans];
                 if (t >= f.start && t < f.end + 0.05) return ans; // +50 ms tolerance
             }
             return -1;

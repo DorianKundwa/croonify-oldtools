@@ -485,7 +485,7 @@ def index():
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
     return response
 
 # Serve outputs and uploads statically
@@ -1230,7 +1230,18 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         jobs[job_id]["progress"] = 0
         jobs[job_id]["stage"] = "Starting job"
 
+        # Store rendering params so the re-render endpoint can inherit them
+        jobs[job_id]["font_name"]     = font_name
+        jobs[job_id]["fontsize"]      = fontsize
+        jobs[job_id]["bg_color"]      = bg_color
+        jobs[job_id]["bg_image_path"] = bg_image_path
+        jobs[job_id]["song_title"]    = song_title
+        jobs[job_id]["artist_name"]   = artist_name
+        jobs[job_id]["audio_path"]    = audio_path
+        jobs[job_id]["video_path"]    = video_path
+
         _check_cancelled(job_id)
+
 
         # Handle video input if provided
         is_video_mode = False
@@ -1852,7 +1863,234 @@ def cancel_job(job_id):
     return jsonify({'job_id': job_id, 'status': 'cancelled', 'message': 'Cancellation requested'}), 200
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LYRIC EDITOR: save corrected alignment & re-render with corrected timing
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.route('/alignment/<job_id>', methods=['PATCH', 'OPTIONS'])
+def save_alignment(job_id):
+    """Overwrite the alignment JSON for a completed job with corrected data from
+    the Lyric Editor.  The corrected file is saved alongside the original so the
+    original is never lost.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    if job_id not in jobs:
+        return jsonify({'error': 'Job not found'}), 404
+
+    job = jobs[job_id]
+    if job.get('status') not in ('done', 'error', 'running'):
+        return jsonify({'error': 'Job must be completed before editing alignment'}), 400
+
+    data = request.get_json(force=True, silent=True)
+    if not data or 'fragments' not in data:
+        return jsonify({'error': 'Body must contain a fragments array'}), 400
+
+    fragments = data['fragments']
+    if not isinstance(fragments, list):
+        return jsonify({'error': 'fragments must be an array'}), 400
+
+    # Validate each fragment minimally
+    for i, frag in enumerate(fragments):
+        try:
+            float(frag.get('begin', frag.get('start', 0)))
+            float(frag.get('end', 0))
+        except Exception:
+            return jsonify({'error': f'Fragment {i} has invalid begin/end timestamps'}), 400
+
+    # Normalise: accept either begin/start field names; always write begin
+    normalised = []
+    for frag in fragments:
+        nf = dict(frag)
+        # Prefer existing 'begin'; fall back to 'start'
+        if 'begin' not in nf and 'start' in nf:
+            nf['begin'] = nf.pop('start')
+        normalised.append(nf)
+
+    # Determine the corrected alignment path
+    original_align = job.get('alignment')
+    if not original_align or not os.path.exists(original_align):
+        return jsonify({'error': 'Original alignment file not found on disk'}), 404
+
+    base, ext = os.path.splitext(original_align)
+    corrected_path = f"{base}_corrected{ext}"
+
+    try:
+        with open(corrected_path, 'w', encoding='utf-8') as f:
+            json.dump({'fragments': normalised}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return jsonify({'error': f'Failed to write corrected alignment: {e}'}), 500
+
+    # Store reference in job
+    job['alignment_corrected'] = corrected_path
+    rel = os.path.relpath(corrected_path, ALIGN_DIR).replace('\\', '/')
+    corrected_url = f'/alignments/{rel}'
+    job['alignment_corrected_url'] = corrected_url
+
+    return jsonify({
+        'success': True,
+        'job_id': job_id,
+        'corrected_path': corrected_path,
+        'corrected_url': corrected_url,
+    })
+
+
+def _rerender_job(rerender_job_id, parent_job_id):
+    """Background thread: re-run build_lyric_video + optional composite using
+    the corrected alignment JSON.  Skips stem separation and re-alignment.
+    """
+    try:
+        jobs[rerender_job_id]['status'] = 'running'
+        jobs[rerender_job_id]['stage'] = 'Starting re-render'
+        jobs[rerender_job_id]['progress'] = 5
+
+        parent = jobs.get(parent_job_id, {})
+
+        # Resolve corrected alignment (fall back to original if none saved yet)
+        alignment_path = parent.get('alignment_corrected') or parent.get('alignment')
+        if not alignment_path or not os.path.exists(alignment_path):
+            jobs[rerender_job_id]['status'] = 'error'
+            jobs[rerender_job_id]['error'] = 'Corrected alignment file not found'
+            return
+
+        # Resolve audio / video paths from the parent job
+        # The parent stored the vocals path; we prefer that for lyric sync
+        wav_path = (parent.get('vocals') or parent.get('audio_path'))
+        video_path = parent.get('video_path')  # set if video mode
+
+        # Validate audio exists
+        if not wav_path or not os.path.exists(wav_path):
+            jobs[rerender_job_id]['status'] = 'error'
+            jobs[rerender_job_id]['error'] = 'Source audio not found for re-render'
+            return
+
+        # Inherit rendering options from the parent job
+        font_name  = parent.get('font_name') or 'Arial'
+        fontsize   = parent.get('fontsize') or 70
+        bg_color   = parent.get('bg_color')
+        bg_image   = parent.get('bg_image_path')
+        song_title = parent.get('song_title')
+        artist_name= parent.get('artist_name')
+
+        # Build output path in same session dir as parent
+        parent_output = parent.get('output') or parent.get('final_output') or ''
+        if parent_output:
+            session_dir = os.path.dirname(parent_output)
+            base_name   = os.path.splitext(os.path.basename(parent_output))[0]
+            base_name   = base_name.replace('_lyrics_meta', '').replace('_lyrics', '')
+        else:
+            session_dir = OUTPUT_DIR
+            base_name   = rerender_job_id
+
+        os.makedirs(session_dir, exist_ok=True)
+        output_path = os.path.join(session_dir, f'{base_name}_rerender.mp4')
+
+        jobs[rerender_job_id]['stage'] = 'Rendering corrected lyric video'
+        jobs[rerender_job_id]['progress'] = 15
+
+        is_video_mode = bool(video_path and os.path.exists(video_path))
+        _build_bg_image = None if is_video_mode else bg_image
+        _build_bg_color = (0, 0, 0) if is_video_mode else (bg_color or (0, 0, 0))
+
+        result = build_lyric_video(
+            wav_path,
+            alignment_path,
+            output_path,
+            _build_bg_image,
+            _build_bg_color,
+            background_video_path=None,
+            use_highlight=False,
+            progress_callback=lambda p: jobs[rerender_job_id].update({'progress': int(15 + p * 75)}),
+            font_name=font_name,
+            fontsize=fontsize,
+            trim_intro=False,
+            trim_end_silence=False,
+        )
+
+        if not result or not os.path.exists(output_path):
+            jobs[rerender_job_id]['status'] = 'error'
+            jobs[rerender_job_id]['error'] = 'build_lyric_video returned no output'
+            return
+
+        # If video mode, composite lyrics over original video
+        if is_video_mode:
+            jobs[rerender_job_id]['stage'] = 'Compositing lyrics over video'
+            jobs[rerender_job_id]['progress'] = 93
+            composite_path = output_path.replace('.mp4', '_composite.mp4')
+            if _ffmpeg_chromakey_overlay(video_path, output_path, composite_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+                output_path = composite_path
+
+        # Add metadata
+        jobs[rerender_job_id]['stage'] = 'Adding metadata'
+        jobs[rerender_job_id]['progress'] = 97
+        meta_path = output_path.replace('.mp4', '_meta.mp4')
+        final_path = add_metadata(output_path, meta_path, title=song_title, artist=artist_name)
+        if final_path != output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+        output_path = final_path
+
+        rel_output = os.path.relpath(output_path, OUTPUT_DIR).replace('\\', '/')
+        jobs[rerender_job_id]['status']     = 'done'
+        jobs[rerender_job_id]['stage']      = 'Re-render complete'
+        jobs[rerender_job_id]['progress']   = 100
+        jobs[rerender_job_id]['output']     = output_path
+        jobs[rerender_job_id]['output_url'] = f'/outputs/{rel_output}'
+
+    except Exception as e:
+        jobs[rerender_job_id]['status'] = 'error'
+        jobs[rerender_job_id]['error']  = str(e)
+        print(f'[rerender] Fatal error: {e}')
+
+
+@app.route('/rerender/<job_id>', methods=['POST', 'OPTIONS'])
+def rerender_video(job_id):
+    """Kick off a lightweight re-render using the corrected alignment JSON saved
+    by the Lyric Editor.  Returns a new rerender_job_id which the frontend polls
+    via GET /status/<rerender_job_id>.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    if job_id not in jobs:
+        return jsonify({'error': 'Job not found'}), 404
+
+    parent_job = jobs[job_id]
+    if parent_job.get('status') not in ('done', 'error'):
+        return jsonify({'error': 'Parent job must be completed before re-rendering'}), 400
+
+    # Must have either a corrected or original alignment
+    align_path = parent_job.get('alignment_corrected') or parent_job.get('alignment')
+    if not align_path or not os.path.exists(align_path):
+        return jsonify({'error': 'No alignment file found — generate the video first'}), 400
+
+    rerender_job_id = str(uuid.uuid4())
+    jobs[rerender_job_id] = {
+        'status': 'queued',
+        'progress': 0,
+        'stage': 'Queued',
+        'created_at': datetime.datetime.now().isoformat(),
+        'parent_job_id': job_id,
+        'is_rerender': True,
+    }
+
+    t = threading.Thread(target=_rerender_job, args=(rerender_job_id, job_id))
+    t.daemon = True
+    t.start()
+
+    return jsonify({'job_id': job_id, 'rerender_job_id': rerender_job_id, 'status': 'queued'})
+
+
 if __name__ == '__main__':
+
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(ALIGN_DIR, exist_ok=True)
