@@ -124,6 +124,7 @@ def update_job_progress(job_id, progress):
         jobs[job_id]["progress"] = min(progress, 99)  # Reserve 100% for completion
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB limit
 
 # Helper to parse hex color like #RRGGBB into (r,g,b)
 def parse_bg_color(color_str):

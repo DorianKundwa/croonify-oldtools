@@ -222,7 +222,7 @@ function validateFile(file, type) {
         return false;
     }
     
-    const maxSize = type === 'video' ? 200 * 1024 * 1024 : (type === 'audio' ? 100 * 1024 * 1024 : 30 * 1024 * 1024);
+    const maxSize = type === 'video' ? 500 * 1024 * 1024 : (type === 'audio' ? 100 * 1024 * 1024 : 30 * 1024 * 1024);
     if (file.size > maxSize) {
         showMessage(`${type} file too large. Maximum size: ${maxSize / (1024 * 1024)}MB`, 'error');
         return false;

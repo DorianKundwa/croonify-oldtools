@@ -811,7 +811,22 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
     
             # Base text (white)
             base_clip = create_text_clip(text, font=font_name, fontsize=fontsize, width=width)
-            base_clip = base_clip.set_position('center')
+
+            # Per-fragment y_offset support (from lyric editor corrections).
+            # A positive value moves the lyric DOWN, negative moves it UP.
+            # y_offset=0 (or absent) keeps the default centred position.
+            try:
+                y_off = int(lyric.get('y_offset') or 0)
+            except Exception:
+                y_off = 0
+            if y_off != 0:
+                # Compute absolute y so the clip is centred + offset
+                clip_h = base_clip.size[1] if hasattr(base_clip, 'size') else fontsize
+                abs_y = max(0, (height - clip_h) // 2 + y_off)
+                base_clip = base_clip.set_position(('center', abs_y))
+            else:
+                base_clip = base_clip.set_position('center')
+
             # Set timing first, then apply fades (fx may require duration)
             base_clip = base_clip.set_start(start_time).set_duration(duration)
             # Fade-in/out durations capped to half the clip length

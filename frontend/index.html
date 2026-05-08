@@ -758,9 +758,9 @@
             const formData = new FormData();
             const mediaFile = audioFileInput.files[0];
             const isVideo   = currentMediaType() === 'video';
-            const maxSize   = isVideo ? 200 * 1024 * 1024 : 100 * 1024 * 1024;
+            const maxSize   = isVideo ? 500 * 1024 * 1024 : 100 * 1024 * 1024;
             if (mediaFile.size > maxSize) {
-                alert(`${isVideo ? 'Video' : 'Audio'} file too large. Max ${isVideo ? '200' : '100'} MB.`);
+                alert(`${isVideo ? 'Video' : 'Audio'} file too large. Max ${isVideo ? '500' : '100'} MB.`);
                 return false;
             }
             formData.append(isVideo ? 'video' : 'audio', mediaFile);
