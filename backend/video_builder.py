@@ -191,6 +191,7 @@ def create_background(width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, color=DEFAULT_
                     x_center = new_w / 2
                     y_center = new_h / 2
                     clip = clip.crop(x_center=x_center, y_center=y_center, width=width, height=height)
+                clip = clip.set_fps(24)  # Enforce constant frame rate to avoid VFR stutter
                 return clip
             except Exception as _vid_err:
                 print(f"Video background failed ({_vid_err}); falling back to image/color")
@@ -921,6 +922,10 @@ def build_lyric_video(audio_path, alignment_path, output_path=None,
         ffparams = ['-movflags', 'faststart', '-pix_fmt', 'yuv420p']
         if selected_encoder.lower() == 'libx264':
             ffparams = ['-preset', str(selected_preset)] + ffparams
+            # Force H.264 High profile @ Level 4.1 for proper 1080p output.
+            # The 'ultrafast' preset historically forced Constrained Baseline (level 3.1 / 720p cap);
+            # explicitly overriding profile/level ensures correct 1080p encoding regardless of preset.
+            ffparams += ['-profile:v', 'high', '-level', '4.1']
         # Ensure consistent audio parameters to match outro segment and avoid concat artifacts
         ffparams += ['-ar', '44100', '-ac', '2', '-b:a', '192k']
         # Optional tune for lower latency & faster throughput

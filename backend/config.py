@@ -16,7 +16,7 @@ FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "ffmpeg")  # If not in PATH, set FFM
 # threads=0 lets ffmpeg auto-select the maximum number of threads (i.e., all cores)
 FFMPEG_THREADS = int(os.environ.get("FFMPEG_THREADS", "0"))
 # preset controls encoder speed/complexity; 'ultrafast' maximizes speed at the cost of compression efficiency
-FFMPEG_PRESET = os.environ.get("FFMPEG_PRESET", "ultrafast")
+FFMPEG_PRESET = os.environ.get("FFMPEG_PRESET", "faster")
 # tune can further optimize for speed/latency; 'zerolatency' removes lookahead and reduces buffering
 FFMPEG_TUNE = os.environ.get("FFMPEG_TUNE", "")
 # encoder can be 'libx264' (CPU) or 'h264_nvenc' (NVIDIA GPU), etc.
