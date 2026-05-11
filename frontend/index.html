@@ -673,7 +673,8 @@
 
         /* ── Uploaded file paths ── */
         let uploadedFiles = { audio: null, video: null, lyrics: null, outro: null, outro_is_video: false, background: null, is_video: false };
-        let currentJobId       = null;
+        let currentJobId       = null;  // tracks the ACTIVE in-flight job (cleared when done)
+        let editorJobId       = null;  // tracks the MOST RECENT completed job (never cleared)
         let activePollInterval = null;
         let _pendingVideoUrl   = null; // stored so retry can reload
 
@@ -928,6 +929,8 @@
                         statusContainer.classList.remove('processing');
                         statusContainer.classList.add('success');
                         cancelBtn.classList.add('hidden');
+                        // Capture job ID for the editor BEFORE clearing currentJobId
+                        editorJobId = jobId;
                         currentJobId = null;
                         stopPolling(false);
 
@@ -1267,7 +1270,8 @@
 
                 // Open the Lyric Editor panel
                 if (window.LyricEditor && window.LyricEditor.openEditor) {
-                    window.LyricEditor.openEditor(currentJobId, API_BASE_URL, data);
+                    // Use editorJobId (the completed job) — currentJobId is null by now
+                    window.LyricEditor.openEditor(editorJobId, API_BASE_URL, data);
                 }
             } catch (e) {
                 console.error('Lyrics overlay setup failed:', e);

@@ -110,6 +110,77 @@ except Exception:
 # Job management
 jobs = {}  # Dictionary to store job status: {job_id: {"status": "queued|running|done|cancelled", "output": None}}
 
+# ── Persistent jobs store ────────────────────────────────────────────────────
+# Completed job stubs (alignment paths, output paths, render params) are saved
+# here so that PATCH /alignment and POST /rerender keep working after a server
+# restart without the user having to regenerate.
+_JOBS_STORE_PATH = None  # resolved after config imports, see _init_jobs_store()
+
+def _init_jobs_store():
+    """Resolve the path for the persistent jobs store file and load existing stubs."""
+    global _JOBS_STORE_PATH
+    try:
+        store_dir = ALIGN_DIR or os.path.join(os.path.dirname(__file__), '..', 'alignments')
+        os.makedirs(store_dir, exist_ok=True)
+        _JOBS_STORE_PATH = os.path.join(store_dir, '_jobs_store.json')
+        _load_persisted_jobs()
+    except Exception as e:
+        print(f"[jobs_store] Failed to init persistent store: {e}")
+
+def _load_persisted_jobs():
+    """Load previously completed job stubs from disk into the in-memory jobs dict."""
+    if not _JOBS_STORE_PATH:
+        return
+    try:
+        if os.path.exists(_JOBS_STORE_PATH):
+            with open(_JOBS_STORE_PATH, 'r', encoding='utf-8') as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                count = 0
+                for jid, jdata in stored.items():
+                    if jid not in jobs:  # never overwrite an in-flight job
+                        jobs[jid] = jdata
+                        count += 1
+                print(f"[jobs_store] Loaded {count} persisted job(s) from disk.")
+    except Exception as e:
+        print(f"[jobs_store] Failed to load persisted jobs: {e}")
+
+def _persist_job_stub(job_id):
+    """Save a lightweight stub of a completed job to disk."""
+    if not _JOBS_STORE_PATH:
+        return
+    try:
+        job = jobs.get(job_id)
+        if not job:
+            return
+        # Only persist fields needed by the editor / re-render endpoints
+        stub_keys = (
+            'status', 'alignment', 'alignment_url', 'alignment_corrected',
+            'alignment_corrected_url', 'output', 'output_url',
+            'final_output', 'final_output_url',
+            'font_name', 'fontsize', 'bg_color', 'bg_image_path',
+            'song_title', 'artist_name', 'audio_path', 'video_path',
+            'vocals', 'instrumental',
+        )
+        stub = {k: job[k] for k in stub_keys if k in job}
+        stub['_persisted'] = True  # marker so we know it's a loaded stub
+
+        # Load existing store, merge, and write back
+        existing = {}
+        if os.path.exists(_JOBS_STORE_PATH):
+            try:
+                with open(_JOBS_STORE_PATH, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        existing[job_id] = stub
+        with open(_JOBS_STORE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[jobs_store] Failed to persist job {job_id}: {e}")
+
 class _JobCancelledError(Exception):
     """Raised internally when a job is cancelled mid-flight."""
 
@@ -125,6 +196,10 @@ def update_job_progress(job_id, progress):
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB limit
+
+# Load persisted jobs immediately at module-import time so the editor
+# endpoints work even when the server is restarted between sessions.
+_init_jobs_store()
 
 # Helper to parse hex color like #RRGGBB into (r,g,b)
 def parse_bg_color(color_str):
@@ -1459,6 +1534,9 @@ def process_job(job_id, audio_path, lyrics_path, bg_color=None, font_name=None, 
         rel_output = os.path.relpath(output_path, OUTPUT_DIR).replace("\\", "/")
         jobs[job_id]["output_url"] = f"/outputs/{rel_output}"
 
+        # Persist a completed stub to disk so the editor works after server restarts
+        _persist_job_stub(job_id)
+
         # Cleanup intermediate files to keep only 3 main files in output folder
         def _cleanup_session(s_dir, keep_files):
             try:
@@ -1934,6 +2012,9 @@ def save_alignment(job_id):
     corrected_url = f'/alignments/{rel}'
     job['alignment_corrected_url'] = corrected_url
 
+    # Persist the updated corrected path so re-render works after a server restart
+    _persist_job_stub(job_id)
+
     return jsonify({
         'success': True,
         'job_id': job_id,
@@ -2097,7 +2178,8 @@ def rerender_video(job_id):
 
 
 if __name__ == '__main__':
-
+    # Initialise the persistent job store (loads any previously completed jobs)
+    _init_jobs_store()
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(ALIGN_DIR, exist_ok=True)
